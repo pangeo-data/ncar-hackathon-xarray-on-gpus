@@ -7,7 +7,7 @@ import xarray as xr
 from torch.utils.data import Dataset, DataLoader
 
 
-class ERA5TimeSeriesDataset(Dataset):
+class ERA5TimeSeriesDataset():
     """
     Load multiple years of ERA5 and forcing datasets from Zarr. 
     """
@@ -41,7 +41,8 @@ class ERA5TimeSeriesDataset(Dataset):
         for year in range(self.year_start, self.year_end + 1):
             zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
             if os.path.exists(zarr_path):
-                data_dict[year] = xr.open_zarr(zarr_path, consolidated=True)
+                ds = xr.open_zarr(zarr_path, consolidated=True)
+                data_dict[year] = ds[self.input_vars]
             else: 
                 print ("Data for year {} not found!!!".format(year))
         return data_dict
@@ -53,21 +54,26 @@ class ERA5TimeSeriesDataset(Dataset):
     def __getitem__(self, index):
         """
         Fetches data at the given index, handling cross-year indexing.
+        Each sample consists of the current atmosphere state (input) and the next time step atmosphere state (target).
 
         Args:
-            index (int): Index to fetch.
+            index (int): Index to fetch (i.e. timestep in future you want to predict).
         Returns:
             tuple: (input tensor, target tensor)
         """
         year, index_in_year = self._find_year_index(index)
         ds = self.all_files[year]
-        
-        x_data = ds.isel({self.time_dim: index_in_year})[self.input_vars].to_array().values
-        y_data = ds.isel({self.time_dim: index_in_year + 1})[self.target_vars].to_array().values
+        x_data = ds.isel({self.time_dim: index_in_year}).to_array().values
 
-        #x = torch.tensor(x_data, dtype=torch.float32).view(-1)
-        #y = torch.tensor(y_data, dtype=torch.float32).view(-1)
-        
+        if index_in_year + 1 < ds.sizes[self.time_dim]:
+            y_data = ds.isel({self.time_dim: index_in_year + 1}).to_array().values
+        else:
+            next_year = year + 1
+            if next_year in self.all_files:
+                y_data = self.all_files[next_year].isel({self.time_dim: 0}).to_array().values
+            else:
+                raise IndexError("No next time step available for the last entry in the dataset.")
+
         return x_data, y_data
 
     def _find_year_index(self, index):
@@ -81,30 +87,51 @@ class ERA5TimeSeriesDataset(Dataset):
         """
         accumulated = 0
         for year, ds in self.all_files.items():
+            print (year)
             year_length = ds.sizes[self.time_dim] - 1
             if index < accumulated + year_length:
                 return year, index - accumulated
             accumulated += year_length
         raise IndexError(f"Index out of range. Dataset length: {self.length}, Requested index: {index}")
 
-    def print_all_data(self):
-        """Prints a summary of all datasets loaded."""
+
+    def __repr__(self):
+        """Returns a summary of all datasets loaded."""
+        summary = [f"ERA5TimeSeriesDataset({self.year_start}-{self.year_end})"]
         for year, ds in self.all_files.items():
-            print(f"Year: {year}")
-            print(ds)
+            summary.append(f"Year: {year}, Variables: {list(ds.data_vars.keys())}, Shape: {ds.sizes}")
+        return "\n".join(summary)
+
+    def get_all_timesteps(self):
+        """
+        Fetches the current state of the atmosphere at all timesteps in the training years.
+        
+        Returns:
+            list: A list of input tensors for each timestep.
+        """
+        all_timesteps = []
+        for year, ds in self.all_files.items():
+            for index_in_year in range(ds.sizes[self.time_dim] - 1):
+                x_data = ds.isel({self.time_dim: index_in_year}).to_array().values
+                all_timesteps.append(x_data)
+        return all_timesteps
 
 
 if __name__ == "__main__":
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     year_start = 1990
     year_end = 2010
-    input_vars = ['SP', 't2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
+    input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
 
     dataset = ERA5TimeSeriesDataset(data_path, year_start, year_end, input_vars=input_vars)
-    dataset.print_all_data()
 
-    index = 5  # Pick any time step
+    ## Here is the dataset summary (in xr.ds)
+    print(dataset)
+
+    index = 1 
     x, y = dataset[index]  # Get input and target
 
     print("Input (current atmosphere state):", x.shape)
+    print (x)
     print("Target (next time step atmosphere state):", y.shape)
+    print (y)
