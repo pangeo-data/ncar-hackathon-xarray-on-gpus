@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
+This file contains two classes:
+1. ERA5TimeSeriesDataset: A custom dataset class to load multiple years of ERA5 data. (No PyTorch dependency)
+2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
 """
 import os
 import xarray as xr
+import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-class ERA5TimeSeriesDataset():
+# -------------------------------------------------------------------------
+# 1. ERA5TimeSeriesDataset Class
+# -------------------------------------------------------------------------
+class ERA5TimeSeriesDataset:
     """
     Load multiple years of ERA5 and forcing datasets from Zarr. 
+    Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
     def __init__(self, data_path, year_start, year_end, input_vars, target_vars=None, time_dim='time'):
@@ -36,15 +43,16 @@ class ERA5TimeSeriesDataset():
         self.length = sum(ds.sizes[self.time_dim] - 1 for ds in self.all_files.values())
 
     def _load_data(self):
-        """Loads all zarr files into a dictionary."""
+        """Loads all zarr files into a dictionary keyed by year."""
         data_dict = {}
         for year in range(self.year_start, self.year_end + 1):
             zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
             if os.path.exists(zarr_path):
                 ds = xr.open_zarr(zarr_path, consolidated=True)
+                # Keep only input variables (note: same set used for target if not specified otherwise)
                 data_dict[year] = ds[self.input_vars]
-            else: 
-                print ("Data for year {} not found!!!".format(year))
+            else:
+                print(f"Data for year {year} not found!!!")
         return data_dict
 
     def __len__(self):
@@ -54,17 +62,21 @@ class ERA5TimeSeriesDataset():
     def __getitem__(self, index):
         """
         Fetches data at the given index, handling cross-year indexing.
-        Each sample consists of the current atmosphere state (input) and the next time step atmosphere state (target).
+        Each sample consists of the current atmosphere state (input) and 
+        the next time step atmosphere state (target).
 
         Args:
-            index (int): Index to fetch (i.e. timestep in future you want to predict).
+            index (int): Global index for the dataset.
         Returns:
-            tuple: (input tensor, target tensor)
+            tuple: (x_data, y_data) as NumPy arrays of shape (vars, lat, lon).
         """
         year, index_in_year = self._find_year_index(index)
         ds = self.all_files[year]
-        x_data = ds.isel({self.time_dim: index_in_year}).to_array().values
 
+        # Current time step
+        x_data = ds.isel({self.time_dim: index_in_year}).to_array().values  # shape: (vars, lat, lon)
+
+        # Next time step (could be next index in the same year or the 0th index in the next year)
         if index_in_year + 1 < ds.sizes[self.time_dim]:
             y_data = ds.isel({self.time_dim: index_in_year + 1}).to_array().values
         else:
@@ -87,13 +99,13 @@ class ERA5TimeSeriesDataset():
         """
         accumulated = 0
         for year, ds in self.all_files.items():
-            print (year)
-            year_length = ds.sizes[self.time_dim] - 1
+            year_length = ds.sizes[self.time_dim] - 1  # -1 because we need a next time step
             if index < accumulated + year_length:
                 return year, index - accumulated
             accumulated += year_length
-        raise IndexError(f"Index out of range. Dataset length: {self.length}, Requested index: {index}")
-
+        raise IndexError(
+            f"Index out of range. Dataset length: {self.length}, Requested index: {index}"
+        )
 
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
@@ -102,22 +114,37 @@ class ERA5TimeSeriesDataset():
             summary.append(f"Year: {year}, Variables: {list(ds.data_vars.keys())}, Shape: {ds.sizes}")
         return "\n".join(summary)
 
-    def get_all_timesteps(self):
+
+# -------------------------------------------------------------------------
+# 2. PyTorch Wrapper Dataset
+# -------------------------------------------------------------------------
+class PyTorchERA5Dataset(Dataset):
+    """
+    Wraps the ERA5TimeSeriesDataset so it can be used in PyTorch DataLoader.
+    """
+    def __init__(self, era5_dataset):
         """
-        Fetches the current state of the atmosphere at all timesteps in the training years.
+        era5_dataset (ERA5TimeSeriesDataset): An instance of the custom ERA5 dataset.
+        """
+        self.era5_dataset = era5_dataset
+
+    def __len__(self):
+        return len(self.era5_dataset)
+
+    def __getitem__(self, idx):
+        x_data, y_data = self.era5_dataset[idx]  # NumPy arrays: (vars, lat, lon)
+        x_tensor = torch.from_numpy(x_data).float()  # Convert to float32
+        y_tensor = torch.from_numpy(y_data).float()  # Convert to float32
+        return x_tensor, y_tensor
+
+
+
         
-        Returns:
-            list: A list of input tensors for each timestep.
-        """
-        all_timesteps = []
-        for year, ds in self.all_files.items():
-            for index_in_year in range(ds.sizes[self.time_dim] - 1):
-                x_data = ds.isel({self.time_dim: index_in_year}).to_array().values
-                all_timesteps.append(x_data)
-        return all_timesteps
 
 
 if __name__ == "__main__":
+
+    ## Example usage of the ERA5TimeSeriesDataset class
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     year_start = 1990
     year_end = 2010
@@ -125,13 +152,10 @@ if __name__ == "__main__":
 
     dataset = ERA5TimeSeriesDataset(data_path, year_start, year_end, input_vars=input_vars)
 
-    ## Here is the dataset summary (in xr.ds)
     print(dataset)
 
-    index = 1 
-    x, y = dataset[index]  # Get input and target
+    index = 1000 
+    x, y = dataset[index]
 
     print("Input (current atmosphere state):", x.shape)
-    print (x)
     print("Target (next time step atmosphere state):", y.shape)
-    print (y)
