@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Simple example to demonstrate how to do training with PyTorch using the ERA5TimeSeriesDataset class.
 
 import os
 import xarray as xr
