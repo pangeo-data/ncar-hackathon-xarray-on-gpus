@@ -2,6 +2,7 @@
 # Simple example to demonstrate how to do training with PyTorch using the ERA5TimeSeriesDataset class.
 
 import os
+import time
 import xarray as xr
 import torch
 import torch.nn as nn
@@ -14,7 +15,7 @@ from ERA5TimeSeriesDataset import ERA5TimeSeriesDataset, PyTorchERA5Dataset
 
 def main():
     num_epochs_default = 2
-    batch_size_default = 2
+    batch_size_default = 8
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
     parser = argparse.ArgumentParser(
@@ -69,7 +70,7 @@ def main():
 
     # --------------------------
     # Define the U-Net model using segmentation_models_pytorch
-    ENCODER = 'resnet50'  # Encoder backbone
+    ENCODER = 'resnet18'  # Encoder backbone
     ENCODER_WEIGHTS = 'imagenet'  # Pretrained weights
     CLASSES = input_vars  # Number of output channels (same as input variables)
     ACTIVATION = None  # No activation for regression tasks
@@ -101,6 +102,8 @@ def main():
         running_loss = 0.0
         
         for i, (inputs, targets) in enumerate(data_loader):
+            start_time = time.time()  # Start time for the step
+
             # Move tensors to GPU if available
             inputs = inputs.to(device)
             targets = targets.to(device)
@@ -117,11 +120,11 @@ def main():
             loss.backward()
             optimizer.step()
             
+            step_time = (time.time() - start_time) * 1000  # Compute elapsed time in milliseconds
             running_loss += loss.item()
-            if (i + 1) % 10 == 0:
-                print(f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], "
-                      f"Loss: {running_loss/10:.4f}")
-                running_loss = 0.0
+            
+            print(f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], "
+                  f"Loss: {loss.item():.4f}, Time per step: {step_time:.2f} ms")
 
     print("Training complete!")
 
