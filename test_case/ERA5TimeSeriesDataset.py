@@ -62,12 +62,16 @@ class ERA5Dataset:
         ds_y = self.dataset.isel(time=slice(forecast_step, None))
         return ds_x, ds_y
     
-    def normalize (self, mean_file, std_file):
+    def normalize (self, mean_file=None, std_file=None):
         """
         Normalize the dataset using the mean and std files.
         """
-        mean = xr.open_dataset(mean_file)
-        std = xr.open_dataset(std_file)
+        if mean_file is not None and std_file is not None:
+            mean = xr.open_dataset(mean_file)
+            std = xr.open_dataset(std_file)
+        else:
+            mean = self.dataset.mean(dim='time')
+            std = self.dataset.std(dim='time')
         self.dataset = (self.dataset - mean) / std
         self.normalized = True
 
