@@ -140,7 +140,7 @@ def main():
             optimizer.zero_grad()
             
             # Forward pass
-            outputs = model(inputs)  # Shape: (batch_size, num_classes, height, width)
+            outputs = model(inputs)
             
             # Compute loss
             loss = criterion(outputs, targets)
