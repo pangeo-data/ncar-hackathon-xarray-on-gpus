@@ -29,13 +29,15 @@ examples_general_data_loading_external_input_19_2.png 1
 Then run `make_data()` to create the zarr store.
 """
 
-
-import types
 from random import shuffle
-from nvidia.dali.pipeline import Pipeline
-import nvidia.dali.fn as fn
+
+import torch
+import tqdm
 import zarr
 import zarr.storage
+from nvidia.dali import fn, types
+from nvidia.dali.pipeline import Pipeline
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from PIL import Image
 
 batch_size = 16
@@ -139,14 +141,23 @@ def main():
         enhance = fn.brightness_contrast(images, contrast=2)
         pipe.set_outputs(enhance, labels)
 
-    pipe.build()
-    pipe_out = pipe.run()
+    # pipe.build()
+    # pipe_out = pipe.run()
+    #
+    # batch_cpu = pipe_out[0].as_cpu()
+    # labels_cpu = pipe_out[1].as_cpu()
+    #
+    # print(batch_cpu.at(0).shape)
+    # print(labels_cpu.at(0))
 
-    batch_cpu = pipe_out[0].as_cpu()
-    labels_cpu = pipe_out[1].as_cpu()
-
-    print(batch_cpu.at(0).shape)
-    print(labels_cpu.at(0))
+    dali_iter = DALIGenericIterator(
+        pipelines=pipe, output_map=["image", "label"], reader_name=None
+    )
+    for i, batch in tqdm.tqdm(iterable=enumerate(dali_iter), total=1000):
+        image: torch.Tensor = batch[0]["image"]
+        label: torch.Tensor = batch[0]["label"]
+        assert str(image.device) == "cuda:0"
+        # break
 
 
 if __name__ == "__main__":
