@@ -5,18 +5,6 @@ This file contains two classes:
 1. ERA5Dataset: A custom dataset class to load multiple years of ERA5 data (1 zarr store per year -- but why?). (No PyTorch dependency)
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
 """
-#!/usr/bin/env python3
-"""
-This file contains two classes:
-1. ERA5TimeSeriesDataset: A custom dataset class to load multiple years of ERA5 data. (No PyTorch dependency)
-2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
-"""
-#!/usr/bin/env python3
-"""
-This file contains two classes:
-1. ERA5TimeSeriesDataset: A custom dataset class to load multiple years of ERA5 data. (No PyTorch dependency)
-2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
-"""
 import os
 import xarray as xr
 import torch
@@ -89,9 +77,6 @@ class ERA5Dataset:
  
 
 
-# -------------------------------------------------------------------------
-# 2. PyTorch Wrapper Dataset
-# -------------------------------------------------------------------------
 class PyTorchERA5Dataset(Dataset):
     """
     Wraps the ERA5TimeSeriesDataset so it can be used in PyTorch DataLoader.
@@ -109,8 +94,6 @@ class PyTorchERA5Dataset(Dataset):
         """Returns the total number of samples in the dataset."""
         return self.ds_x.sizes['time']
 
-
-
     def __getitem__(self, index):
         """
         Returns a single sample (input, target) as PyTorch tensors.
@@ -126,8 +109,8 @@ class PyTorchERA5Dataset(Dataset):
         y_data = self.ds_y.isel(time=index).to_array().values
 
         # Convert to PyTorch tensors
-        x_tensor = torch.from_numpy(x_data).float()  # Convert to float32
-        y_tensor = torch.from_numpy(y_data).float()  # Convert to float32
+        x_tensor = torch.from_numpy(x_data).float()
+        y_tensor = torch.from_numpy(y_data).float()
 
         return x_tensor, y_tensor
 
