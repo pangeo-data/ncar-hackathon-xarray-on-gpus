@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 """
+This dummy class is created for handling ERA-5 organized by year in Zarr format.
+This file contains two classes:
+1. ERA5Dataset: A custom dataset class to load multiple years of ERA5 data (1 zarr store per year -- but why?). (No PyTorch dependency)
+2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
+"""
+#!/usr/bin/env python3
+"""
+This file contains two classes:
+1. ERA5TimeSeriesDataset: A custom dataset class to load multiple years of ERA5 data. (No PyTorch dependency)
+2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
+"""
+#!/usr/bin/env python3
+"""
 This file contains two classes:
 1. ERA5TimeSeriesDataset: A custom dataset class to load multiple years of ERA5 data. (No PyTorch dependency)
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
@@ -9,142 +22,62 @@ import xarray as xr
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-
-# -------------------------------------------------------------------------
-# 1. ERA5TimeSeriesDataset Class
-# -------------------------------------------------------------------------
-class ERA5TimeSeriesDataset:
+class ERA5Dataset:
     """
     Load multiple years of ERA5 and forcing datasets from Zarr. 
-    Each __getitem__(index) returns two xarray Datasets:
-    - x_data: Current atmosphere state (input)  
-    - y_data: Next time step atmosphere state (target)  
+    Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
-    def __init__(self, data_path, year_start, year_end, input_vars, target_vars=None, time_dim='time'):
+    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,):
         """
         Initializes the dataset.
 
         Args:
-            data_path (str): Path to the zarr store.
+            data_path (str): Path to the zarr store base....
             year_start (int): Start year for the dataset.
             year_end (int): End year for the dataset.
             input_vars (list): List of input variable names.
             target_vars (list, optional): List of target variable names. Defaults to input_vars.
-            time_dim (str): Name of the time dimension. Defaults to 'time'.
         """
         self.data_path = data_path
-        self.year_start = year_start
-        self.year_end = year_end
+        self.start_year = year_start
+        self.end_year = year_end
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
-        self.time_dim = time_dim
-        self.normalization_enabled = False
+        self.normalized= False
+        self.forecast_step=1
 
         # load all zarr:
-        self.all_files = self._load_data()
-        self.length = sum(ds.sizes[self.time_dim] - 1 for ds in self.all_files.values())
+        self.dataset = self._load_data()
 
     def _load_data(self):
-        """Loads all zarr files and concatenates them along the time dimension."""
-        datasets = []
-        for year in range(self.year_start, self.year_end + 1):
+        """Loads all zarr files into a dictionary keyed by year."""
+        zarr_paths = []
+        for year in range(self.start_year, self.end_year + 1):
             zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
             if os.path.exists(zarr_path):
-                ds = xr.open_zarr(zarr_path, consolidated=True)
-                # Keep only input variables (note: same set used for target if not specified otherwise)
-                datasets.append(ds[self.input_vars])
+                zarr_paths.append(zarr_path)
             else:
                 print(f"Data for year {year} not found!!!")
-        
-        if datasets:
-            combined_ds = xr.concat(datasets, dim=self.time_dim)
-            return {year: combined_ds}
-        else:
-            raise FileNotFoundError("No data files found for the specified years.")
+        ds = xr.open_mfdataset(zarr_paths, engine='zarr', consolidated=True, combine='by_coords')[self.input_vars]
+        self.length = ds.sizes['time']
+        return ds
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
         return self.length
 
-    def __getitem__(self, index):
+    def fetch_timeseries(self, forecast_step=1):
         """
-        Fetches data at the given index, handling cross-year indexing.
-        Each sample consists of the current atmosphere state (input) and 
-        the next time step atmosphere state (target).
-
-        Args:
-            index (int): Global index for the dataset.
-        Returns:
-            tuple: (x_data, y_data) as NumPy arrays of shape (vars, lat, lon).
+        Fetches the input and target timeseries data for a given forecast step.
         """
-        year, index_in_year = self._find_year_index(index)
-        ds = self.all_files[year]
-
-        # Current time step
-        x_data = ds.isel({self.time_dim: index_in_year}).to_array().values  # shape: (vars, lat, lon)
-
-        # Next time step (could be next index in the same year or the 0th index in the next year)
-        if index_in_year + 1 < ds.sizes[self.time_dim]:
-            y_data = ds.isel({self.time_dim: index_in_year + 1}).to_array().values
-        else:
-            next_year = year + 1
-            if next_year in self.all_files:
-                y_data = self.all_files[next_year].isel({self.time_dim: 0}).to_array().values
-            else:
-                raise IndexError("No next time step available for the last entry in the dataset.")
-
-        if self.normalization_enabled:
-            x_data = (x_data - self.mean) / self.std
-            y_data = (y_data - self.mean) / self.std
-        #else:
-        #    print("Normalization is not enabled!!!")
-        return x_data, y_data
-
-    def _find_year_index(self, index):
-        """
-        Determines the corresponding year and local index within that year.
-
-        Args:
-            index (int): Global dataset index.
-        Returns:
-            tuple: (year, local index within the year's dataset)
-        """
-        accumulated = 0
-        for year, ds in self.all_files.items():
-            year_length = ds.sizes[self.time_dim] - 1  # -1 because we need a next time step
-            if index < accumulated + year_length:
-                return year, index - accumulated
-            accumulated += year_length
-        raise IndexError(
-            f"Index out of range. Dataset length: {self.length}, Requested index: {index}"
-        )
+        ds_x = self.dataset.isel(time=slice(None, -self.forecast_step))
+        ds_y = self.dataset.isel(time=slice(self.forecast_step, None))
+        return ds_x, ds_y
 
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
-        summary = [f"ERA5TimeSeriesDataset({self.year_start}-{self.year_end})"]
-        for year, ds in self.all_files.items():
-            summary.append(f"Year: {year}, Variables: {list(ds.data_vars.keys())}, Shape: {ds.sizes}")
-        return "\n".join(summary)
-
-    def normalize(self, mean_path, std_path):
-        """
-        Reads mean and std from NetCDF files and applies normalization.
-        
-        Args:
-            mean_path (str): Path to the NetCDF file containing mean values.
-            std_path (str): Path to the NetCDF file containing standard deviation values.
-        """
-        print(f"Loading mean from {mean_path}")
-        mean_ds = xr.open_dataset(mean_path)
-        self.mean = mean_ds[self.input_vars].to_array().values  # Extract mean for input variables
-
-        print(f"Loading std from {std_path}")
-        std_ds = xr.open_dataset(std_path)
-        self.std = std_ds[self.input_vars].to_array().values  # Extract std for input variables
-
-        self.normalization_enabled = True
-        print("Normalization is enabled.")
+        return self.dataset.__repr__()
  
 
 
@@ -155,24 +88,41 @@ class PyTorchERA5Dataset(Dataset):
     """
     Wraps the ERA5TimeSeriesDataset so it can be used in PyTorch DataLoader.
     """
-    def __init__(self, era5_dataset):
+    def __init__(self, era5_dataset, forecast_step=1):
         """
-        era5_dataset (ERA5TimeSeriesDataset): An instance of the custom ERA5 dataset.
+        era5_dataset (ERA5Dataset): An instance of the custom ERA5 dataset.
+        forecast_step (int): The forecast step to use for fetching timeseries data.
         """
         self.era5_dataset = era5_dataset
-
+        self.forecast_step = forecast_step
+        self.ds_x, self.ds_y = self.era5_dataset.fetch_timeseries(forecast_step=self.forecast_step)
+    
     def __len__(self):
-        return len(self.era5_dataset)
+        """Returns the total number of samples in the dataset."""
+        return self.ds_x.sizes['time']
 
-    def __getitem__(self, idx):
-        x_data, y_data = self.era5_dataset[idx]  # NumPy arrays: (vars, lat, lon)
+
+
+    def __getitem__(self, index):
+        """
+        Returns a single sample (input, target) as PyTorch tensors.
+
+        Args:
+            index (int): Index of the sample to retrieve.
+
+        Returns:
+            tuple: (input_tensor, target_tensor)
+        """
+        # Extract data at the given index
+        x_data = self.ds_x.isel(time=index).to_array().values
+        y_data = self.ds_y.isel(time=index).to_array().values
+
+        # Convert to PyTorch tensors
         x_tensor = torch.from_numpy(x_data).float()  # Convert to float32
         y_tensor = torch.from_numpy(y_data).float()  # Convert to float32
+
         return x_tensor, y_tensor
 
-
-
-        
 
 
 if __name__ == "__main__":
@@ -183,12 +133,14 @@ if __name__ == "__main__":
     year_end = 2010
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
 
-    dataset = ERA5TimeSeriesDataset(data_path, year_start, year_end, input_vars=input_vars)
+    train_dataset = ERA5Dataset(data_path, year_start, year_end, input_vars=input_vars)
+    print (train_dataset)
+    forecast_step = 1
+    ds_x , ds_y = train_dataset.fetch_timeseries(forecast_step=1)
 
-    print(dataset)
+    print(ds_x)
 
-    index = 1000 
-    x, y = dataset[index]
-
-    print("Input (current atmosphere state):", x.shape)
-    print("Target (next time step atmosphere state):", y.shape)
+    # or use with data loader for pytorch as follows:
+    # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
+    # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
+    # etc....
