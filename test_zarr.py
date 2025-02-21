@@ -15,7 +15,7 @@ That should be in zarr `main` soon. You'll also need the data.
 mkdir -p data/images
 cd data/images
 curl -O https://docs.nvidia.com/deeplearning/dali/user-guide/docs/_images/examples_general_data_loading_external_input_12_2.png
-curl -O curl -O https://docs.nvidia.com/deeplearning/dali/user-guide/docs/_images/examples_general_data_loading_external_input_19_2.png
+curl -O https://docs.nvidia.com/deeplearning/dali/user-guide/docs/_images/examples_general_data_loading_external_input_19_2.png
 
 ```
 
@@ -38,14 +38,13 @@ import zarr
 import zarr.storage
 from PIL import Image
 
-
 batch_size = 16
 
 
 # create the data
 # Right now, assuming a chunksize of 1 along the dimension being sampled.
 # We have some interesting options here w.r.t. the chunksize and shuffling.
-# 
+#
 
 
 def make_data():
@@ -134,7 +133,9 @@ def main():
     pipe = Pipeline(batch_size=batch_size, num_threads=2, device_id=0)
     # note: using the `device="gpu"` variant from https://docs.nvidia.com/deeplearning/dali/user-guide/docs/examples/general/data_loading/external_input.html
     with pipe:
-        images, labels = fn.external_source(source=eii, num_outputs=2, dtype=types.UINT8, device="gpu")
+        images, labels = fn.external_source(
+            source=eii, num_outputs=2, dtype=types.UINT8, device="gpu"
+        )
         enhance = fn.brightness_contrast(images, contrast=2)
         pipe.set_outputs(enhance, labels)
 
