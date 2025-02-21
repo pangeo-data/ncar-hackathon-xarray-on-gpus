@@ -34,18 +34,17 @@ class ERA5Dataset:
 
         Args:
             data_path (str): Path to the zarr store base....
-            year_start (int): Start year for the dataset.
-            year_end (int): End year for the dataset.
+            start_year (int): Start year for the dataset.
+            end_year (int): End year for the dataset.
             input_vars (list): List of input variable names.
             target_vars (list, optional): List of target variable names. Defaults to input_vars.
         """
         self.data_path = data_path
-        self.start_year = year_start
-        self.end_year = year_end
+        self.start_year = start_year
+        self.end_year = end_year
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.normalized= False
-        self.forecast_step=1
 
         # load all zarr:
         self.dataset = self._load_data()
@@ -71,9 +70,18 @@ class ERA5Dataset:
         """
         Fetches the input and target timeseries data for a given forecast step.
         """
-        ds_x = self.dataset.isel(time=slice(None, -self.forecast_step))
-        ds_y = self.dataset.isel(time=slice(self.forecast_step, None))
+        ds_x = self.dataset.isel(time=slice(None, -forecast_step))
+        ds_y = self.dataset.isel(time=slice(forecast_step, None))
         return ds_x, ds_y
+    
+    def normalize (self, mean_file, std_file):
+        """
+        Normalize the dataset using the mean and std files.
+        """
+        mean = xr.open_dataset(mean_file)
+        std = xr.open_dataset(std_file)
+        self.dataset = (self.dataset - mean) / std
+        self.normalized = True
 
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
@@ -129,11 +137,11 @@ if __name__ == "__main__":
 
     ## Example usage of the ERA5TimeSeriesDataset class
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    year_start = 1990
-    year_end = 2010
+    start_year = 1990
+    end_year = 2010
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
 
-    train_dataset = ERA5Dataset(data_path, year_start, year_end, input_vars=input_vars)
+    train_dataset = ERA5Dataset(data_path, start_year, end_year, input_vars=input_vars)
     print (train_dataset)
     forecast_step = 1
     ds_x , ds_y = train_dataset.fetch_timeseries(forecast_step=1)
