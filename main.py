@@ -15,7 +15,7 @@ from ERA5TimeSeriesDataset import ERA5TimeSeriesDataset, PyTorchERA5Dataset
 
 def main():
     num_epochs_default = 2
-    batch_size_default = 8
+    batch_size_default = 16
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
     parser = argparse.ArgumentParser(
@@ -60,11 +60,15 @@ def main():
     )
     
     print(f"Total samples: {len(era5_dataset)}")
-    
+    mean_path = "/glade/campaign/cisl/aiml/ksha/CREDIT/mean_6h_0.25deg.nc"
+    std_path = "/glade/campaign/cisl/aiml/ksha/CREDIT/std_6h_0.25deg.nc"
+
+    #era5_dataset.normalize(mean_path,std_path)
+
     # --------------------------
     # Wrap in a PyTorch Dataset
     pytorch_dataset = PyTorchERA5Dataset(era5_dataset)
-    data_loader = DataLoader(pytorch_dataset, batch_size=batch_size, shuffle=True)
+    data_loader = DataLoader(pytorch_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     print ("Data loaded!")
 
@@ -72,6 +76,7 @@ def main():
     # Define the U-Net model using segmentation_models_pytorch
     ENCODER = 'resnet18'  # Encoder backbone
     ENCODER_WEIGHTS = 'imagenet'  # Pretrained weights
+    ENCODER_WEIGHTS = None  # No pretrained weights
     CLASSES = input_vars  # Number of output channels (same as input variables)
     ACTIVATION = None  # No activation for regression tasks
 
@@ -92,9 +97,14 @@ def main():
 
     # --------------------------
     # Define the loss function and optimizer
-    criterion = torch.nn.MSELoss()  # For regression
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)  # Adam optimizer
-    
+    #criterion = torch.nn.MSELoss()
+    #criterion = torch.nn.L1Loss()
+    criterion = nn.SmoothL1Loss(beta=1.0)  # Huber Loss for robust training
+
+
+    #optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  # Adam optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)  
+
     # --------------------------
     # Training Loop
     for epoch in range(num_epochs):
@@ -118,13 +128,16 @@ def main():
             
             # Backprop
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Prevents exploding gradients
+
             optimizer.step()
             
-            step_time = (time.time() - start_time) * 1000  # Compute elapsed time in milliseconds
             running_loss += loss.item()
             
+            step_time = (time.time() - start_time)  # Compute elapsed time in milliseconds
+            
             print(f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], "
-                  f"Loss: {loss.item():.4f}, Time per step: {step_time:.2f} ms")
+                  f"Loss: {loss.item():.4f}, Time per step: {step_time:.2f} s.")
 
     print("Training complete!")
 
