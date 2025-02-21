@@ -16,7 +16,9 @@ from torch.utils.data import Dataset, DataLoader
 class ERA5TimeSeriesDataset:
     """
     Load multiple years of ERA5 and forcing datasets from Zarr. 
-    Each __getitem__(index) returns (input, target) as NumPy arrays.
+    Each __getitem__(index) returns two xarray Datasets:
+    - x_data: Current atmosphere state (input)  
+    - y_data: Next time step atmosphere state (target)  
     """
 
     def __init__(self, data_path, year_start, year_end, input_vars, target_vars=None, time_dim='time'):
@@ -37,23 +39,29 @@ class ERA5TimeSeriesDataset:
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.time_dim = time_dim
+        self.normalization_enabled = False
 
         # load all zarr:
         self.all_files = self._load_data()
         self.length = sum(ds.sizes[self.time_dim] - 1 for ds in self.all_files.values())
 
     def _load_data(self):
-        """Loads all zarr files into a dictionary keyed by year."""
-        data_dict = {}
+        """Loads all zarr files and concatenates them along the time dimension."""
+        datasets = []
         for year in range(self.year_start, self.year_end + 1):
             zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
             if os.path.exists(zarr_path):
                 ds = xr.open_zarr(zarr_path, consolidated=True)
                 # Keep only input variables (note: same set used for target if not specified otherwise)
-                data_dict[year] = ds[self.input_vars]
+                datasets.append(ds[self.input_vars])
             else:
                 print(f"Data for year {year} not found!!!")
-        return data_dict
+        
+        if datasets:
+            combined_ds = xr.concat(datasets, dim=self.time_dim)
+            return {year: combined_ds}
+        else:
+            raise FileNotFoundError("No data files found for the specified years.")
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -86,6 +94,11 @@ class ERA5TimeSeriesDataset:
             else:
                 raise IndexError("No next time step available for the last entry in the dataset.")
 
+        if self.normalization_enabled:
+            x_data = (x_data - self.mean) / self.std
+            y_data = (y_data - self.mean) / self.std
+        #else:
+        #    print("Normalization is not enabled!!!")
         return x_data, y_data
 
     def _find_year_index(self, index):
@@ -113,6 +126,26 @@ class ERA5TimeSeriesDataset:
         for year, ds in self.all_files.items():
             summary.append(f"Year: {year}, Variables: {list(ds.data_vars.keys())}, Shape: {ds.sizes}")
         return "\n".join(summary)
+
+    def normalize(self, mean_path, std_path):
+        """
+        Reads mean and std from NetCDF files and applies normalization.
+        
+        Args:
+            mean_path (str): Path to the NetCDF file containing mean values.
+            std_path (str): Path to the NetCDF file containing standard deviation values.
+        """
+        print(f"Loading mean from {mean_path}")
+        mean_ds = xr.open_dataset(mean_path)
+        self.mean = mean_ds[self.input_vars].to_array().values  # Extract mean for input variables
+
+        print(f"Loading std from {std_path}")
+        std_ds = xr.open_dataset(std_path)
+        self.std = std_ds[self.input_vars].to_array().values  # Extract std for input variables
+
+        self.normalization_enabled = True
+        print("Normalization is enabled.")
+ 
 
 
 # -------------------------------------------------------------------------
