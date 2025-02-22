@@ -1,0 +1,13 @@
+name: gpuhackathon
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - cupy~=13.3.0
+  - jupyterlab~=4.3.5
+  - nvidia-dali-python~=1.45.0
+  - python=3.11
+  - pytorch~=2.6.0
+  - segmentation-models-pytorch~=0.4.0
+  - xarray>=2025.1.2
+  - zarr~=3.0.3
