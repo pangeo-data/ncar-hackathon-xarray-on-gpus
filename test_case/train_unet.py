@@ -49,7 +49,7 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
 def main():
     num_epochs_default = 2
-    batch_size_default = 4
+    batch_size_default = 16
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
     parser = argparse.ArgumentParser(
@@ -210,6 +210,10 @@ def main():
             'rmse': sum(entry['rmse'] for entry in epoch_train_losses) / len(epoch_train_losses)
         }
 
+        print (f'Epoch [{epoch+1}/{num_epochs}], '
+               f'Average Training Loss: {avg_train_metrics["loss"]:.4f}, '
+               f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C')
+
         # -----------------------------------------------------------------
         # Validation Loop
         # -----------------------------------------------------------------
@@ -223,32 +227,28 @@ def main():
                 
                 outputs = model(inputs)
                 loss, loss_components = custom_loss(outputs, targets)
-                epoch_val_losses.append(loss.item())
-
+                epoch_val_losses.append(loss_components)
 
         # Calculate average validation metrics
         avg_val_metrics = {
-            'loss': sum(entry['rmse'] for entry in epoch_val_losses) / len(epoch_val_losses),
+            'loss': sum(entry['total'] for entry in epoch_val_losses) / len(epoch_val_losses),
             'rmse': sum(entry['rmse'] for entry in epoch_val_losses) / len(epoch_val_losses)
         }
 
-        print(f' Epoch [{epoch+1}/{num_epochs}], '
-              f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
-              f'Average Validation RMSE: {avg_val_metrics["rmse"][-1]:.2f}°C, '
-              f'Average Validation Std Diff: {avg_val_metrics["std_diff"][-1]:.2f}')
+        print (f'Epoch [{epoch+1}/{num_epochs}], '
+               f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
+               f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C')
 
-                # Save model checkpoint
         checkpoint_path = os.path.join(model_dir, f"model_epoch_{epoch+1}.pth")
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': trainer.optimizer.state_dict(),
-            'train_loss': train_metrics,
-            'val_loss': val_metrics,
-            'config': training_config
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': avg_train_metrics,
+            'val_loss': avg_val_metrics,
         }, checkpoint_path)
         
-        logger.info(f"Saved model checkpoint to {checkpoint_path}")
+        print(f"Saved model checkpoint to {checkpoint_path}!")
 
     print("Training complete!")
 

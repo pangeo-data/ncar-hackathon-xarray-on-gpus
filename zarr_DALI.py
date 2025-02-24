@@ -42,11 +42,13 @@ def create_dali_pipeline(dataset, batch_size, device='gpu'):
 if __name__ == "__main__":
     ## Example usage of the ERA5TimeSeriesDataset class
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    start_year = 1990
+    start_year = 2000
     end_year = 2010
 
     # for now, just surface variables!cd
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
+    target_vars = ['t2m']
+
 
     #dataset = ERA5TimeSeriesDataset(data_path, start_year, end_year, input_vars=input_vars)
 
@@ -55,8 +57,9 @@ if __name__ == "__main__":
         start_year=start_year,
         end_year=end_year,
         input_vars=input_vars,
-        #target_vars=target_vars
+        target_vars=target_vars
     )
+
     
     print(era5_dataset)       
     print(f"Total samples: {len(era5_dataset)}")
