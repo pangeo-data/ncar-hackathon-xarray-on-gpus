@@ -16,7 +16,7 @@ class ERA5Dataset:
     Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
-    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,):
+    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,forecast_step=1):
         """
         Initializes the dataset.
 
@@ -33,9 +33,13 @@ class ERA5Dataset:
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.normalized= False
+        self.index = 0
+        self.forecast_step = forecast_step
 
         # load all zarr:
         self.dataset = self._load_data()
+        self.ds_x, self.ds_y = self.fetch_timeseries(self.forecast_step)  # Precompute pairs
+        self.length = self.ds_x.sizes['time']  # Update length based on valid pairs
 
     def _load_data(self):
         """Loads all zarr files into a dictionary keyed by year."""
@@ -53,6 +57,7 @@ class ERA5Dataset:
     def __len__(self):
         """Returns the total number of samples in the dataset."""
         return self.length
+
 
     def fetch_timeseries(self, forecast_step=1):
         """
@@ -78,6 +83,27 @@ class ERA5Dataset:
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
         return self.dataset.__repr__()
+
+    def __iter__(self):
+        """Reset index for new iteration"""
+        self.index = 0
+        return self
+
+    def __next__(self):
+        """Return (input, target) pair with proper forecast offset"""
+        if self.index < self.length:
+            # Get input and target at current index
+            x_data = self.ds_x.isel(time=self.index).to_array().values
+            y_data = self.ds_y.isel(time=self.index).to_array().values
+            self.index += 1
+            return (x_data, y_data)
+        raise StopIteration
+
+    def __getitem__(self, index):
+        """Enable direct indexing"""
+        x_data = self.ds_x.isel(time=index).to_array().values
+        y_data = self.ds_y.isel(time=index).to_array().values
+        return (x_data, y_data)
  
 
 

@@ -24,16 +24,12 @@ def create_dali_pipeline(dataset, batch_size, device='gpu'):
         dtype=types.FLOAT,
         device=device,
         parallel=True,
-        batch=False,
+        batch=True,  # NS: error if not batch=True
     )
+    print ('----')
+    print(f"inputs: {inputs}, targets: {targets}")
 
-    # Normalize inputs and targets (example preprocessing step)
-    inputs = fn.normalize(inputs, mean=0.0, stddev=1.0)
-    targets = fn.normalize(targets, mean=0.0, stddev=1.0)
-
-    # Resize inputs and targets to a fixed size (example preprocessing step)
-    inputs = fn.resize(inputs, resize_x=256, resize_y=256)
-    targets = fn.resize(targets, resize_x=256, resize_y=256)
+    print(f"inputs: {inputs}, targets: {targets}")
 
     return inputs, targets
 
@@ -61,12 +57,15 @@ if __name__ == "__main__":
     )
 
     
+
     print(era5_dataset)       
     print(f"Total samples: {len(era5_dataset)}")
+    #pytorch_dataset = PyTorchERA5Dataset(train_dataset)
+
 
     # Create DALI pipeline
     batch_size = 32
-    pipe = create_dali_pipeline(era5_dataset, batch_size=batch_size, device='gpu', num_threads=4, device_id=0)
+    pipe = create_dali_pipeline(era5_dataset.fetch_timeseries(), batch_size=batch_size, device='gpu', num_threads=4, device_id=0)
     pipe.build()
 
     # Create DALI iterator
