@@ -33,7 +33,6 @@ class ERA5Dataset:
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.normalized= False
-        self.index = 0
         self.forecast_step = forecast_step
 
         # load all zarr:
@@ -83,21 +82,6 @@ class ERA5Dataset:
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
         return self.dataset.__repr__()
-
-    def __iter__(self):
-        """Reset index for new iteration"""
-        self.index = 0
-        return self
-
-    def __next__(self):
-        """Return (input, target) pair with proper forecast offset"""
-        if self.index < self.length:
-            # Get input and target at current index
-            x_data = self.ds_x.isel(time=self.index).to_array().values
-            y_data = self.ds_y.isel(time=self.index).to_array().values
-            self.index += 1
-            return (x_data, y_data)
-        raise StopIteration
 
     def __getitem__(self, index):
         """Enable direct indexing"""
