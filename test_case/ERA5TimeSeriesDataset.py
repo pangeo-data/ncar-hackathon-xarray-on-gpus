@@ -9,11 +9,16 @@ import os
 
 import torch
 import xarray as xr
+from nvidia.dali import fn
+from nvidia.dali.pipeline import pipeline_def
 from torch.utils.data import Dataset
 
 
 def _load_data(
-    data_path: str, start_year: int, end_year: int, input_vars: list[str]
+    data_path: str = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv",
+    start_year: int = 2013,
+    end_year: int = 2014,
+    input_vars: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
 ) -> xr.Dataset:
     """Loads all zarr files into a dictionary keyed by year."""
     zarr_paths: list[str] = []
@@ -30,6 +35,12 @@ def _load_data(
     )[input_vars]
     # self.length = ds.sizes["time"]
     return ds
+
+
+@pipeline_def
+def zarr_pipeline():
+    array = fn.python_function(function=_load_data, device="cpu")
+    return array
 
 
 # %%
@@ -155,14 +166,23 @@ if __name__ == "__main__":
     end_year = 2010
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
 
-    train_dataset = ERA5Dataset(data_path, start_year, end_year, input_vars=input_vars)
-    print (train_dataset)
-    forecast_step = 1
-    ds_x , ds_y = train_dataset.fetch_timeseries(forecast_step=1)
+    use_dali: bool = True
+    if not use_dali:
+        train_dataset = ERA5Dataset(
+            data_path, start_year, end_year, input_vars=input_vars
+        )
+        print(train_dataset)
+        forecast_step = 1
+        ds_x, ds_y = train_dataset.fetch_timeseries(forecast_step=1)
 
-    print(ds_x)
+        print(ds_x)
 
-    # or use with data loader for pytorch as follows:
-    # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
-    # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
-    # etc....
+        # or use with data loader for pytorch as follows:
+        # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
+        # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
+        # etc....
+
+    else:  # use_dali is True
+        pipe = zarr_pipeline(batch_size=16, num_threads=4, device_id=None)
+        pipe.build()
+        arr = pipe.run()
