@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+
+#-----------------
+# This is not working yet.
+#-----------------
+
 from nvidia.dali import pipeline_def, Pipeline
-import nvidia.dali.fn as fn
-import nvidia.dali.types as types
+import nvidia.dali.fn as fn, types
 #from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
 from test_case.ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
