@@ -6,13 +6,25 @@ import time
 import argparse
 
 import xarray as xr
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 import segmentation_models_pytorch as smp
 
 from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
+
+
+def set_random_seeds(random_seed=0):
+    """
+    Set random seeds for reproducibility.
+    """
+    torch.manual_seed(random_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(random_seed)
 
 def custom_loss(predictions, targets, lambda_std=0.1):
     """
@@ -47,6 +59,8 @@ def custom_loss(predictions, targets, lambda_std=0.1):
     return total_loss, loss_components
 
 
+        
+
 def main():
     num_epochs_default = 2
     batch_size_default = 16
@@ -73,17 +87,91 @@ def main():
         help="Learning rate.",
         default=learning_rate_default,
     )
+    parser.add_argument(
+        "--distributed",
+        action='store_true',
+        help="Use distributed data parallel (DDP).",
+    )
+
 
     argv = parser.parse_args()
     num_epochs = argv.num_epochs
     batch_size = argv.batch_size
     learning_rate = argv.learning_rate
+    distributed = argv.distributed
+
+    # Set random seeds for reproducibility!
+    random_seed = 0
+    set_random_seeds(random_seed=random_seed)
+
+    # --------------------------
+    # Distributed setup
+    if distributed:
+        try:
+            # support for different flavors of MPI
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            shmem_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)                                                            
+        
+            LOCAL_RANK = shmem_comm.Get_rank()
+            WORLD_SIZE = comm.Get_size()
+            WORLD_RANK = comm.Get_rank()
+        
+            os.environ['MASTER_ADDR'] = comm.bcast( socket.gethostbyname( socket.gethostname() ), root=0 )
+            os.environ['MASTER_PORT'] = '1234'
+        
+            if "MASTER_ADDR" not in os.environ:
+                os.environ['MASTER_ADDR'] = comm.bcast( socket.gethostbyname( socket.gethostname() ), root=0 )
+            if "MASTER_PORT" not in os.environ:
+                os.environ['MASTER_PORT'] = str(np.random.randint(1000,8000))
+        except:
+            if "LOCAL_RANK" in os.environ:
+                # Environment variables set by torch.distributed.launch or torchrun
+                LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+                WORLD_RANK = int(os.environ["RANK"])
+            elif "OMPI_COMM_WORLD_LOCAL_RANK" in os.environ:
+                # Environment variables set by mpirun
+                LOCAL_RANK = int(os.environ["OMPI_COMM_WORLD_LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["OMPI_COMM_WORLD_SIZE"])
+                WORLD_RANK = int(os.environ["OMPI_COMM_WORLD_RANK"])
+            elif "PMI_RANK" in os.environ:
+                # Environment variables set by cray-mpich
+                LOCAL_RANK = int(os.environ["PMI_LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["PMI_SIZE"])
+                WORLD_RANK = int(os.environ["PMI_RANK"])
+            else:
+                import sys
+                sys.exit("Can't find the evironment variables for local rank!")
+    else:
+        # for running without torchrun
+        LOCAL_RANK = 0
+        WORLD_SIZE = 1
+        WORLD_RANK = 0
+
+    if WORLD_RANK == 0:
+        print ('----------------------')
+        print ('LOCAL_RANK  : ', LOCAL_RANK)
+        print ('WORLD_SIZE  : ', WORLD_SIZE)
+        print ('WORLD_RANK  : ', WORLD_RANK)
+        print("cuda device : ", torch.cuda.device_count())
+        print("pytorch version : ", torch.__version__)
+        print("nccl version : ", torch.cuda.nccl.version())
+        print("torch config : ", torch.__config__.show())
+        print(torch.__config__.parallel_info())
+        print("----------------------")    
+
+    # ---------------------
+    if distributed:
+        torch.distributed.init_process_group(
+            backend="nccl", rank=WORLD_RANK, world_size=WORLD_SIZE
+        )
 
     # --------------------------
     # Initialize the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    input_vars = ['t2m']
-    target_vars = ['t2m']
+    input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
+    target_vars = ['t2m'] # Predict temperature only for now!!!!
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
@@ -101,9 +189,15 @@ def main():
         input_vars=input_vars,
         target_vars=target_vars
     )
-    train_dataset.normalize(mean_file='/glade/campaign/cisl/aiml/ksha/CREDIT/mean_6h_0.25deg.nc', std_file='/glade/campaign/cisl/aiml/ksha/CREDIT/std_6h_0.25deg.nc')
+    mean_file = '/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc' # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+    std_file = '/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc'  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+    train_dataset.normalize(mean_file=mean_file, std_file=std_file)
     train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
-    train_loader = DataLoader(train_pytorch, batch_size=batch_size, shuffle=True, pin_memory=True)
+    if distributed:
+        train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
+        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
+    else:
+        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
 
     # 2) valing dataset: 2018 - 2022
     val_dataset = ERA5Dataset(
@@ -113,10 +207,13 @@ def main():
         input_vars=input_vars,
         target_vars=target_vars
     )
-    val_dataset.normalize(mean_file='/glade/campaign/cisl/aiml/ksha/CREDIT/mean_6h_0.25deg.nc', std_file='/glade/campaign/cisl/aiml/ksha/CREDIT/std_6h_0.25deg.nc')
+    val_dataset.normalize(mean_file=mean_file, std_file=std_file)
     val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
-    val_loader = DataLoader(val_pytorch, batch_size=batch_size, shuffle=False, pin_memory=True)
-
+    if distributed:
+        val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
+        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
+    else:
+        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
 
     print("Data loaded!")
     print(f"Train samples: {len(train_loader.dataset)}")
@@ -142,9 +239,22 @@ def main():
         activation=ACTIVATION,
     )
 
+    
     # Move the model to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    if distributed:
+        torch.cuda.set_device(LOCAL_RANK)
+        device = torch.device("cuda:{}".format(LOCAL_RANK))                                                           
+        print ("device:", device, "world_rank:", WORLD_RANK, "local_rank:", LOCAL_RANK)
+        model = model.to(LOCAL_RANK)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+
+    if distributed:
+        ddp_model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK, find_unused_parameters=True
+        )
+        model = ddp_model
 
     torch.backends.cudnn.benchmark = True
 
@@ -155,18 +265,17 @@ def main():
     #criterion = nn.SmoothL1Loss(beta=1.0)  # Huber Loss for robust training
 
 
-    #optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)  
 
     # --------------------------
     # Training Loop
     print("Starting training loop...")
 
-    # Create directory for saved models
-    model_dir = "./saved_models"
-    os.makedirs(model_dir, exist_ok=True)
+
+    training_start_time = time.time()
     
     for epoch in range(num_epochs):
+        epoch_start_time = time.time()
         model.train()
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
@@ -193,6 +302,7 @@ def main():
             #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Prevents exploding gradients
 
             optimizer.step()
+            torch.cuda.synchronize()
             
             epoch_train_losses.append(loss_components)
             running_loss += loss.item()
@@ -218,16 +328,17 @@ def main():
         # Validation Loop
         # -----------------------------------------------------------------
         model.eval()
-        #val_losses = []
         epoch_val_losses = []
 
         with torch.no_grad():
-            for inputs, targets in val_loader:
+            for i, (inputs, targets) in enumerate(val_loader):
                 inputs, targets = inputs.to(device), targets.to(device)
                 
                 outputs = model(inputs)
                 loss, loss_components = custom_loss(outputs, targets)
                 epoch_val_losses.append(loss_components)
+                torch.cuda.synchronize()
+
 
         # Calculate average validation metrics
         avg_val_metrics = {
@@ -239,18 +350,38 @@ def main():
                f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
                f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C')
 
-        checkpoint_path = os.path.join(model_dir, f"model_epoch_{epoch+1}.pth")
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': avg_train_metrics,
-            'val_loss': avg_val_metrics,
-        }, checkpoint_path)
-        
-        print(f"Saved model checkpoint to {checkpoint_path}!")
+        epoch_time = (time.time() - epoch_start_time)
 
-    print("Training complete!")
+        print(f'Epoch [{epoch+1}/{num_epochs}], Time this epoch: {epoch_time:.2f} seconds')
+
+        # save snapshot of the model
+        if WORLD_RANK==0:
+            # Create directory for saved models
+            model_dir = "./saved_models"
+            os.makedirs(model_dir, exist_ok=True)
+            checkpoint_path = os.path.join(model_dir, f"model_epoch_{epoch+1}.pth")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': avg_train_metrics,
+                'val_loss': avg_val_metrics,
+            }, checkpoint_path)
+
+            print(f"Saved model checkpoint to {checkpoint_path}!")
+
+        if distributed:
+            total_samples = len(train_loader.dataset) * batch_size * WORLD_SIZE * num_epochs
+        else:
+            total_samples = len(train_loader.dataset) * batch_size * num_epochs
+
+        if WORLD_RANK == 0:
+            print(f"Training samples processed this epoch: {total_samples}")
+            print(f"Average Throughput: {total_samples / epoch_time:.2f} samples/sec.")
+
+    total_time = (time.time() - training_start_time) 
+    print(f"Total training time: {total_time:.2f} seconds!")
+    print ('-'*50)
 
 if __name__ == "__main__":
     main()
