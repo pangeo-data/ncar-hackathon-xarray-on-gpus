@@ -16,7 +16,7 @@ class ERA5Dataset:
     Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
-    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,):
+    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,forecast_step=1):
         """
         Initializes the dataset.
 
@@ -33,9 +33,12 @@ class ERA5Dataset:
         self.input_vars = input_vars
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.normalized= False
+        self.forecast_step = forecast_step
 
         # load all zarr:
         self.dataset = self._load_data()
+        self.ds_x, self.ds_y = self.fetch_timeseries(self.forecast_step)  # Precompute pairs
+        self.length = self.ds_x.sizes['time']  # Update length based on valid pairs
 
     def _load_data(self):
         """Loads all zarr files into a dictionary keyed by year."""
@@ -54,6 +57,7 @@ class ERA5Dataset:
         """Returns the total number of samples in the dataset."""
         return self.length
 
+
     def fetch_timeseries(self, forecast_step=1):
         """
         Fetches the input and target timeseries data for a given forecast step.
@@ -62,18 +66,28 @@ class ERA5Dataset:
         ds_y = self.dataset.isel(time=slice(forecast_step, None))
         return ds_x, ds_y
     
-    def normalize (self, mean_file, std_file):
+    def normalize (self, mean_file=None, std_file=None):
         """
         Normalize the dataset using the mean and std files.
         """
-        mean = xr.open_dataset(mean_file)
-        std = xr.open_dataset(std_file)
+        if mean_file is not None and std_file is not None:
+            mean = xr.open_dataset(mean_file)
+            std = xr.open_dataset(std_file)
+        else:
+            mean = self.dataset.mean(dim='time')
+            std = self.dataset.std(dim='time')
         self.dataset = (self.dataset - mean) / std
         self.normalized = True
 
     def __repr__(self):
         """Returns a summary of all datasets loaded."""
         return self.dataset.__repr__()
+
+    def __getitem__(self, index):
+        """Enable direct indexing"""
+        x_data = self.ds_x.isel(time=index).to_array().values
+        y_data = self.ds_y.isel(time=index).to_array().values
+        return (x_data, y_data)
  
 
 
