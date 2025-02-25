@@ -6,13 +6,36 @@ This file contains two classes:
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
 """
 import os
-import xarray as xr
-import torch
-from torch.utils.data import Dataset, DataLoader
 
+import torch
+import xarray as xr
+from torch.utils.data import Dataset
+
+
+def _load_data(
+    data_path: str, start_year: int, end_year: int, input_vars: list[str]
+) -> xr.Dataset:
+    """Loads all zarr files into a dictionary keyed by year."""
+    zarr_paths: list[str] = []
+    for year in range(start_year, end_year + 1):
+        zarr_path: str = os.path.join(
+            data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr"
+        )
+        if os.path.exists(zarr_path):
+            zarr_paths.append(zarr_path)
+        else:
+            print(f"Data for year {year} not found!!!")
+    ds: xr.Dataset = xr.open_mfdataset(
+        zarr_paths, engine="zarr", consolidated=True, combine="by_coords"
+    )[input_vars]
+    # self.length = ds.sizes["time"]
+    return ds
+
+
+# %%
 class ERA5Dataset:
     """
-    Load multiple years of ERA5 and forcing datasets from Zarr. 
+    Load multiple years of ERA5 and forcing datasets from Zarr.
     Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
@@ -36,22 +59,16 @@ class ERA5Dataset:
         self.forecast_step = forecast_step
 
         # load all zarr:
-        self.dataset = self._load_data()
-        self.ds_x, self.ds_y = self.fetch_timeseries(self.forecast_step)  # Precompute pairs
-        self.length = self.ds_x.sizes['time']  # Update length based on valid pairs
-
-    def _load_data(self):
-        """Loads all zarr files into a dictionary keyed by year."""
-        zarr_paths = []
-        for year in range(self.start_year, self.end_year + 1):
-            zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
-            if os.path.exists(zarr_path):
-                zarr_paths.append(zarr_path)
-            else:
-                print(f"Data for year {year} not found!!!")
-        ds = xr.open_mfdataset(zarr_paths, engine='zarr', consolidated=True, combine='by_coords')[self.input_vars]
-        self.length = ds.sizes['time']
-        return ds
+        self.dataset = _load_data(
+            data_path=self.data_path,
+            start_year=self.start_year,
+            end_year=self.end_year,
+            input_vars=self.input_vars,
+        )
+        self.ds_x, self.ds_y = self.fetch_timeseries(
+            self.forecast_step
+        )  # Precompute pairs
+        self.length = self.ds_x.sizes["time"]  # Update length based on valid pairs
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
