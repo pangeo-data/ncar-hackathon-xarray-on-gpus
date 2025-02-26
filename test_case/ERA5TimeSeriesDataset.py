@@ -273,7 +273,7 @@ if __name__ == "__main__":
             num_threads=4,
             prefetch_queue_depth=4,
             py_num_workers=4,
-            device_id=torch.device("cuda:0"),
+            device_id=0,
             py_start_method="fork",
         )
         with pipe:
@@ -301,4 +301,5 @@ if __name__ == "__main__":
             pipe.set_outputs(*data)
 
         pipe.build()
-        arr = pipe.run()
+        arrays = pipe.run()
+        print(arrays)
