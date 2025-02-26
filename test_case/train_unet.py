@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 # Simple example to demonstrate how to do training with PyTorch using the ERA5TimeSeriesDataset class.
 
+import argparse
 import os
 import time
-import argparse
 
-import xarray as xr
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
 import segmentation_models_pytorch as smp
-
-from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
+import torch
+from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset, seqzarr_pipeline
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 
 def set_random_seeds(random_seed=0):
@@ -92,6 +89,11 @@ def main():
         action='store_true',
         help="Use distributed data parallel (DDP).",
     )
+    parser.add_argument(
+        "--use-dali",
+        action="store_true",
+        help="Use DALI pipeline instead of regular Pytorch Dataloader.",
+    )
 
 
     argv = parser.parse_args()
@@ -99,6 +101,7 @@ def main():
     batch_size = argv.batch_size
     learning_rate = argv.learning_rate
     distributed = argv.distributed
+    use_dali = argv.use_dali
 
     # Set random seeds for reproducibility!
     random_seed = 0
@@ -182,42 +185,71 @@ def main():
     print("Loading datasets...")
 
     # 1) Training dataset: 2000 - 2017
-    train_dataset = ERA5Dataset(
-        data_path=data_path,
-        start_year=train_start_year,
-        end_year=train_end_year,
-        input_vars=input_vars,
-        target_vars=target_vars
-    )
-    mean_file = '/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc' # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-    std_file = '/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc'  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-    train_dataset.normalize(mean_file=mean_file, std_file=std_file)
-    train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
-    if distributed:
-        train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
-    else:
-        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
+    if use_dali:
+        pipe_train = seqzarr_pipeline()
+        train_loader = DALIGenericIterator(
+            pipelines=pipe_train, output_map=["input", "target"]
+        )
+        if distributed:
+            raise NotImplementedError("DALI pipeline with distributed not working yet")
+    elif not use_dali:
+        train_dataset = ERA5Dataset(
+            data_path=data_path,
+            start_year=train_start_year,
+            end_year=train_end_year,
+            input_vars=input_vars,
+            target_vars=target_vars,
+        )
+        mean_file = "/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc"  # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        std_file = "/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc"  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        train_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
 
-    # 2) valing dataset: 2018 - 2022
-    val_dataset = ERA5Dataset(
-        data_path=data_path,
-        start_year=val_start_year,
-        end_year=val_end_year,
-        input_vars=input_vars,
-        target_vars=target_vars
-    )
-    val_dataset.normalize(mean_file=mean_file, std_file=std_file)
-    val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
-    if distributed:
-        val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
-        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
-    else:
-        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
+        if distributed:
+            train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
+            train_loader = DataLoader(
+                train_pytorch,
+                batch_size=batch_size,
+                pin_memory=True,
+                sampler=train_sampler,
+            )
+        else:
+            train_loader = DataLoader(
+                train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True
+            )
+
+    # 2) validation dataset: 2018 - 2022
+    if use_dali:
+        pipe_val = seqzarr_pipeline()
+        val_loader = DALIGenericIterator(
+            pipelines=pipe_val, output_map=["input", "target"]
+        )
+        if distributed:
+            raise NotImplementedError("DALI pipeline with distributed not working yet")
+    elif not use_dali:  # classic Pytorch Dataset
+        val_dataset = ERA5Dataset(
+            data_path=data_path,
+            start_year=val_start_year,
+            end_year=val_end_year,
+            input_vars=input_vars,
+            target_vars=target_vars,
+        )
+        val_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
+
+        if distributed:
+            val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
+            val_loader = DataLoader(
+                val_pytorch, batch_size=batch_size, pin_memory=True, sampler=val_sampler
+            )
+        else:
+            val_loader = DataLoader(
+                val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True
+            )
 
     print("Data loaded!")
-    print(f"Train samples: {len(train_loader.dataset)}")
-    print(f"Validation samples:  {len(val_loader.dataset)}")
+    # print(f"Train samples: {len(train_loader.dataset)}")
+    # print(f"Validation samples:  {len(val_loader.dataset)}")
     print ('-'*50)
 
 
