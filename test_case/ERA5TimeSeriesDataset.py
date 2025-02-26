@@ -259,7 +259,7 @@ class SeqZarrSource:
     prefetch_queue_depth=4,
     py_num_workers=4,
     device_id=0,
-    py_start_method="fork",
+    py_start_method="spawn",
 )
 def seqzarr_pipeline():
     """
