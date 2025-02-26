@@ -254,10 +254,10 @@ class SeqZarrSource:
 
 
 @pipeline_def(
-    batch_size=16,
-    num_threads=4,
-    prefetch_queue_depth=4,
-    py_num_workers=4,
+    batch_size=8,
+    num_threads=2,
+    prefetch_queue_depth=2,
+    py_num_workers=2,
     device_id=0,
     py_start_method="spawn",
 )
