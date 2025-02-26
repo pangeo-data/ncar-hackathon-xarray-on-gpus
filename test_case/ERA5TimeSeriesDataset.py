@@ -8,11 +8,12 @@ This file contains two classes:
 import os
 
 import numpy as np
+import nvidia.dali as dali
 import torch
 import xarray as xr
-import nvidia.dali as dali
-from torch.utils.data import Dataset
 import zarr
+from nvidia.dali.pipeline import pipeline_def
+from torch.utils.data import Dataset
 
 Tensor = torch.Tensor
 
@@ -252,6 +253,41 @@ class SeqZarrSource:
             return len(self.indices)
 
 
+@pipeline_def(
+    batch_size=16,
+    num_threads=4,
+    prefetch_queue_depth=4,
+    py_num_workers=4,
+    device_id=0,
+    py_start_method="fork",
+)
+def seqzarr_pipeline():
+    """
+    Pipeline to load Zarr stores via a DALI External Source operator.
+    """
+    # Zarr source
+    source = SeqZarrSource()
+
+    # Update length of dataset
+    # self.total_length: int = len(source) // self.batch_size
+
+    # Read current batch
+    data = dali.fn.external_source(
+        source,
+        num_outputs=2,  # len(self.pipe_outputs),
+        parallel=True,
+        batch=True,
+        prefetch_queue_depth=4,
+        device="cpu",
+    )
+
+    # if self.device.type == "cuda":
+    # Move tensors to GPU as external_source won't do that
+    data_x, data_y = [d.gpu() for d in data]
+
+    # Set outputs
+    return data_x, data_y
+
 
 # %%
 if __name__ == "__main__":
@@ -279,38 +315,7 @@ if __name__ == "__main__":
         # etc....
 
     else:  # use_dali is True
-        pipe = dali.Pipeline(
-            batch_size=16,
-            num_threads=4,
-            prefetch_queue_depth=4,
-            py_num_workers=4,
-            device_id=0,
-            py_start_method="fork",
-        )
-        with pipe:
-            # Zarr source
-            source = SeqZarrSource()
-
-            # Update length of dataset
-            # self.total_length: int = len(source) // self.batch_size
-
-            # Read current batch
-            data = dali.fn.external_source(
-                source,
-                num_outputs=2,  # len(self.pipe_outputs),
-                parallel=True,
-                batch=True,
-                prefetch_queue_depth=4,
-                device="cpu",
-            )
-
-            # if self.device.type == "cuda":
-            # Move tensors to GPU as external_source won't do that
-            data = [d.gpu() for d in data]
-
-            # Set outputs
-            pipe.set_outputs(*data)
-
+        pipe = seqzarr_pipeline()
         pipe.build()
         arrays = pipe.run()
         print(arrays)
