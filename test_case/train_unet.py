@@ -15,6 +15,13 @@ from torch.utils.data.distributed import DistributedSampler
 import segmentation_models_pytorch as smp
 
 from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
+from ERA5TimeSeriesDataset import ERA5DALIDataLoader  # Import the DALI-based loader
+from nvidia.dali.pipeline import pipeline_def
+import nvidia.dali.fn as fn
+import nvidia.dali.types as types
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
+
+from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
 
 
 def set_random_seeds(random_seed=0):
@@ -25,6 +32,24 @@ def set_random_seeds(random_seed=0):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     np.random.seed(random_seed)
+
+@pipeline_def
+def dali_era5_pipeline(input_data):
+    """
+    NVIDIA DALI pipeline for processing ERA5 dataset.
+
+    Args:
+        input_data: ERA5 dataset (NumPy arrays)
+
+    Returns:
+        Processed tensors for model training
+    """
+
+    # Load external source (ERA5 Data)
+    input_data, target_data = fn.external_source(source=input_data, batch=True, num_outputs=2, dtype=types.FLOAT)
+
+    return input_data, target_data
+
 
 def custom_loss(predictions, targets, lambda_std=0.1):
     """
@@ -220,6 +245,20 @@ def main():
     print(f"Validation samples:  {len(val_loader.dataset)}")
     print ('-'*50)
 
+    # --------------------------
+    use_dali = True
+    if use_dali:
+        print("Using NVIDIA DALI for data loading...")
+        train_dali_loader = ERA5DALIDataLoader(train_dataset, batch_size=batch_size)
+        val_dali_loader = ERA5DALIDataLoader(val_dataset, batch_size=batch_size)
+
+        train_pipeline = dali_era5_pipeline(batch_size=batch_size, num_threads=4, device_id=LOCAL_RANK, input_data=train_dali_loader)
+        val_pipeline = dali_era5_pipeline(batch_size=batch_size, num_threads=4, device_id=LOCAL_RANK, input_data=val_dali_loader)
+
+        train_loader = DALIGenericIterator(pipelines=[train_pipeline], output_map=["input", "target"], size=len(train_dataset), auto_reset=True)
+        val_loader = DALIGenericIterator(pipelines=[val_pipeline], output_map=["input", "target"], size=len(val_dataset), auto_reset=True)
+        print("DALI data loaders created!")
+
 
     # --------------------------
     # Define the U-Net model using segmentation_models_pytorch
@@ -280,12 +319,18 @@ def main():
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
         
-        for i, (inputs, targets) in enumerate(train_loader):
+        #for i, (inputs, targets) in enumerate(train_loader):
+        for i, batch in enumerate(train_loader):
+            inputs, targets = batch[0]["input"], batch[0]["target"] if use_dali else batch
+            inputs, targets = inputs.to(device), targets.to(device)
+            print (inputs)
+            print (targets)
+
             start_time = time.time()  # Start time for the step
 
             # Move tensors to GPU if available
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+            #inputs = inputs.to(device)
+            #targets = targets.to(device)
             
             optimizer.zero_grad()
             
