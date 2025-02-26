@@ -232,14 +232,25 @@ class SeqZarrSource:
                     batch_data, (self.batch_size, self.num_steps, *batch_data.shape[1:])
                 )
             )
+        # assert len(data) == 6
+        # assert data[0].shape == (1, 2, 640, 1280)  # BTHW
 
-        return tuple(data)
+        # Stack variables along channel dimension, and split into two along timestep dim
+        data_stack = np.stack(data, axis=2)
+        # assert data_stack.shape == (1, 2, 6, 640, 1280)  # BTCHW
+        data_x = data_stack[:, 0, :, :, :]
+        # assert data_x.shape == (1, 6, 640, 1280)  # BCHW
+        data_y = data_stack[:, 1, :, :, :]
+        # assert data_y.shape == (1, 6, 640, 1280)  # BCHW
+
+        return (data_x, data_y)
 
     def __len__(self):
         if self.batch:
             return self.batch_mapping.shape[0] * self.batch_size
         else:
             return len(self.indices)
+
 
 
 # %%
@@ -286,7 +297,7 @@ if __name__ == "__main__":
             # Read current batch
             data = dali.fn.external_source(
                 source,
-                num_outputs=6,  # len(self.pipe_outputs),
+                num_outputs=2,  # len(self.pipe_outputs),
                 parallel=True,
                 batch=True,
                 prefetch_queue_depth=4,
