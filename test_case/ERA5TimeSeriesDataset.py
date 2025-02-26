@@ -6,9 +6,16 @@ This file contains two classes:
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
 """
 import os
-import xarray as xr
+
+import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+import xarray as xr
+import nvidia.dali as dali
+from torch.utils.data import Dataset
+import zarr
+
+Tensor = torch.Tensor
+
 
 class ERA5Dataset:
     """
@@ -129,7 +136,113 @@ class PyTorchERA5Dataset(Dataset):
         return x_tensor, y_tensor
 
 
+class SeqZarrSource:
+    """
+    DALI Source for loading a zarr array.
+    The arrays will be indexed along the first dimension (usually time).
 
+    https://github.com/NVIDIA/modulus/blob/e6d7b02fb19ab9cdb3138de228ca3d6f0c99e7d1/examples/weather/unified_recipe/seq_zarr_datapipe.py#L186
+    """
+
+    def __init__(
+        self,
+        file_store: str = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv/SixHourly_y_TOTAL_2022-01-01_2022-12-31_staged.zarr/",  #: fsspec.mapping.FSMap,
+        variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
+        num_steps: int = 2,
+        batch_size: int = 1,
+        shuffle: bool = True,
+        process_rank: int = 0,
+        world_size: int = 1,
+        batch: bool = True,
+    ):
+        # Set up parameters
+        self.file_store = file_store
+        self.variables = variables
+        self.num_steps = num_steps
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.batch = batch
+
+        # Check if all zarr arrays have the same first dimension
+        _zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
+        self.first_dim: int = _zarr_dataset[variables[0]].shape[0]
+        for variable in self.variables:
+            if _zarr_dataset[variable].shape[0] != self.first_dim:
+                raise ValueError("All zarr arrays must have the same first dimension.")
+
+        # Get number of samples
+        self.indices: np.ndarray = np.arange(
+            batch_size
+            * world_size
+            * ((self.first_dim - self.num_steps) // batch_size // world_size)
+        )
+        self.indices: np.ndarray = np.array_split(self.indices, world_size)[
+            process_rank
+        ]
+
+        # Get number of full batches, ignore possible last incomplete batch for now.
+        self.num_batches: int = len(self.indices) // self.batch_size
+
+        # Set up last epoch
+        self.last_epoch = None
+
+        # Set zarr dataset
+        self.zarr_dataset = None
+
+        # Set call
+        if self.batch:
+            self._call = self.__call__
+            self.batch_mapping: np.ndarray = np.stack(
+                np.array_split(
+                    self.indices[
+                        : len(self.indices) - len(self.indices) % self.batch_size
+                    ],
+                    self.batch_size,
+                ),
+                axis=1,
+            )
+        else:
+            self._call = self._sample_call
+
+    def __call__(
+        self,
+        sample_info: dali.types.BatchInfo,
+    ) -> tuple[Tensor, Tensor, np.ndarray, np.ndarray, np.ndarray]:
+        # Open Zarr dataset
+        if self.zarr_dataset is None:
+            self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
+
+        if sample_info >= self.batch_mapping.shape[0]:
+            raise StopIteration()
+
+        # Get batch indices
+        batch_idx: np.ndarray = self.batch_mapping[sample_info]
+        time_idx: np.ndarray = np.concatenate(
+            [idx + np.arange(self.num_steps) for idx in batch_idx]
+        )
+
+        # Get data
+        data = []
+
+        # Get slices
+        for i, variable in enumerate(self.variables):
+            batch_data = self.zarr_dataset[variable][time_idx]
+            data.append(
+                np.reshape(
+                    batch_data, (self.batch_size, self.num_steps, *batch_data.shape[1:])
+                )
+            )
+
+        return tuple(data)
+
+    def __len__(self):
+        if self.batch:
+            return self.batch_mapping.shape[0] * self.batch_size
+        else:
+            return len(self.indices)
+
+
+# %%
 if __name__ == "__main__":
 
     ## Example usage of the ERA5TimeSeriesDataset class
@@ -138,14 +251,54 @@ if __name__ == "__main__":
     end_year = 2010
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
 
-    train_dataset = ERA5Dataset(data_path, start_year, end_year, input_vars=input_vars)
-    print (train_dataset)
-    forecast_step = 1
-    ds_x , ds_y = train_dataset.fetch_timeseries(forecast_step=1)
+    use_dali: bool = True
+    if not use_dali:
+        train_dataset = ERA5Dataset(
+            data_path, start_year, end_year, input_vars=input_vars
+        )
+        print(train_dataset)
+        forecast_step = 1
+        ds_x, ds_y = train_dataset.fetch_timeseries(forecast_step=1)
 
-    print(ds_x)
+        print(ds_x)
 
-    # or use with data loader for pytorch as follows:
-    # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
-    # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
-    # etc....
+        # or use with data loader for pytorch as follows:
+        # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
+        # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
+        # etc....
+
+    else:  # use_dali is True
+        pipe = dali.Pipeline(
+            batch_size=16,
+            num_threads=4,
+            prefetch_queue_depth=4,
+            py_num_workers=4,
+            device_id=None,
+            py_start_method="fork",
+        )
+        with pipe:
+            # Zarr source
+            source = SeqZarrSource()
+
+            # Update length of dataset
+            # self.total_length: int = len(source) // self.batch_size
+
+            # Read current batch
+            data = dali.fn.external_source(
+                source,
+                num_outputs=6,  # len(self.pipe_outputs),
+                parallel=True,
+                batch=True,
+                prefetch_queue_depth=4,
+                device="cpu",
+            )
+
+            # if self.device.type == "cuda":
+            # Move tensors to GPU as external_source won't do that
+            data = [d.gpu() for d in data]
+
+            # Set outputs
+            pipe.set_outputs(*data)
+
+        pipe.build()
+        arr = pipe.run()
