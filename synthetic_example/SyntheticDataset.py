@@ -99,8 +99,8 @@ class ERA5Dataset:
 
     def __getitem__(self, index):
         """Enable direct indexing"""
-        x_data = np.zeros([6, 640, 1280])
-        y_data = np.zeros([6, 640, 1280])
+        x_data = np.zeros([6, 640, 1280], dtype=np.float32)
+        y_data = np.zeros([6, 640, 1280], dtype=np.float32)
         return (x_data, y_data)
 
 
@@ -135,7 +135,7 @@ class PyTorchERA5Dataset(Dataset):
             tuple: (input_tensor, target_tensor)
         """
         # Extract data at the given index
-        x_tensor = torch.zeros([6, 640, 1280])
+        x_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
         # TODO: I'm surprised this is [6, 640, 1280] rather than [1, 640, 1280]
-        y_tensor = torch.zeros([6, 640, 1280])
+        y_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
         return x_tensor, y_tensor
