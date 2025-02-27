@@ -93,8 +93,12 @@ class ERA5Dataset:
 
     def __getitem__(self, index):
         """Enable direct indexing"""
-        x_data = self.ds_x.isel(time=index).to_array().values
-        y_data = self.ds_y.isel(time=index).to_array().values
+        if os.environ.get("synthetic"):
+            x_data = np.zeros([6, 640, 1280], dtype=np.float32)
+            y_data = np.zeros([6, 640, 1280], dtype=np.float32)
+        else:
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
         return (x_data, y_data)
  
 
@@ -126,14 +130,20 @@ class PyTorchERA5Dataset(Dataset):
         Returns:
             tuple: (input_tensor, target_tensor)
         """
-        # Extract data at the given index
-        x_data = self.ds_x.isel(time=index).to_array().values
-        y_data = self.ds_y.isel(time=index).to_array().values
-
-        # Convert to PyTorch tensors
-        x_tensor = torch.from_numpy(x_data).float()
-        y_tensor = torch.from_numpy(y_data).float()
-
+        if os.environ.get("synthetic"):
+            x_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
+            y_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
+        else:
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
+            # Extract data at the given index
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
+    
+            # Convert to PyTorch tensors
+            x_tensor = torch.from_numpy(x_data).float()
+            y_tensor = torch.from_numpy(y_data).float()
+    
         return x_tensor, y_tensor
 
 
