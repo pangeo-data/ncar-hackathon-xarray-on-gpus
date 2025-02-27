@@ -1,0 +1,3 @@
+18750000+1 records in
+18750000+1 records out
+9600000128 bytes (9.6 GB, 8.9 GiB) copied, 23.8053 s, 403 MB/s
