@@ -242,7 +242,8 @@ class SeqZarrSource:
         data_y = data_stack[:, 1, :, :, :]
         # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
 
-        return (data_x, data_y)
+        # Return list to satisfy batch_processing=True
+        return [x for x in data_x], [y for y in data_y]
 
     def __len__(self):
         if self.batch:
@@ -274,7 +275,7 @@ def seqzarr_pipeline():
     )
 
     # Read current batch
-    data = dali.fn.python_function(
+    data_x, data_y = dali.fn.python_function(
         indexes,
         function=source,
         batch_processing=True,
@@ -284,7 +285,8 @@ def seqzarr_pipeline():
 
     # if self.device.type == "cuda":
     # Move tensors to GPU as external_source won't do that
-    data_x, data_y = [d.gpu() for d in data]
+    data_x = data_x.gpu()
+    data_y = data_y.gpu()
 
     # Set outputs
     return data_x, data_y
