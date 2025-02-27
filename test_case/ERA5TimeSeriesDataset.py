@@ -147,10 +147,10 @@ class SeqZarrSource:
 
     def __init__(
         self,
-        file_store: str = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv/SixHourly_y_TOTAL_2022-01-01_2022-12-31_staged.zarr/",  #: fsspec.mapping.FSMap,
+        file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_test.zarr/",
         variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
         num_steps: int = 2,
-        batch_size: int = 1,
+        batch_size: int = 16,
         shuffle: bool = True,
         process_rank: int = 0,
         world_size: int = 1,
@@ -205,19 +205,17 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
-    def __call__(
-        self,
-        sample_info: dali.types.BatchInfo,
-    ) -> tuple[Tensor, Tensor, np.ndarray, np.ndarray, np.ndarray]:
+    def __call__(self, index: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         # Open Zarr dataset
         if self.zarr_dataset is None:
             self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
-        if sample_info >= self.batch_mapping.shape[0]:
+        index: int = index[0]  # turn [np.ndarray()] with one element to np.ndarray()
+        if index >= self.batch_mapping.shape[0]:
             raise StopIteration()
 
         # Get batch indices
-        batch_idx: np.ndarray = self.batch_mapping[sample_info]
+        batch_idx: np.ndarray = self.batch_mapping[index]
         time_idx: np.ndarray = np.concatenate(
             [idx + np.arange(self.num_steps) for idx in batch_idx]
         )
@@ -233,18 +231,19 @@ class SeqZarrSource:
                     batch_data, (self.batch_size, self.num_steps, *batch_data.shape[1:])
                 )
             )
-        # assert len(data) == 6
-        # assert data[0].shape == (1, 2, 640, 1280)  # BTHW
+        # assert len(data) == 6  # number of variables
+        # assert data[0].shape == (16, 2, 640, 1280)  # BTHW
 
         # Stack variables along channel dimension, and split into two along timestep dim
         data_stack = np.stack(data, axis=2)
-        # assert data_stack.shape == (1, 2, 6, 640, 1280)  # BTCHW
+        # assert data_stack.shape == (16, 2, 6, 640, 1280)  # BTCHW
         data_x = data_stack[:, 0, :, :, :]
-        # assert data_x.shape == (1, 6, 640, 1280)  # BCHW
+        # assert data_x.shape == (16, 6, 640, 1280)  # BCHW
         data_y = data_stack[:, 1, :, :, :]
-        # assert data_y.shape == (1, 6, 640, 1280)  # BCHW
+        # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
 
-        return (data_x, data_y)
+        # Return list to satisfy batch_processing=True
+        return [data_x], [data_y]
 
     def __len__(self):
         if self.batch:
@@ -255,9 +254,9 @@ class SeqZarrSource:
 
 @pipeline_def(
     batch_size=16,
-    num_threads=4,
-    prefetch_queue_depth=4,
-    py_num_workers=4,
+    num_threads=2,
+    prefetch_queue_depth=2,
+    py_num_workers=2,
     device_id=0,
     py_start_method="spawn",
 )
@@ -266,24 +265,26 @@ def seqzarr_pipeline():
     Pipeline to load Zarr stores via a DALI External Source operator.
     """
     # Zarr source
-    source = SeqZarrSource()
+    source = SeqZarrSource(batch_size=16)
 
-    # Update length of dataset
-    # self.total_length: int = len(source) // self.batch_size
+    def index_generator(idx: int) -> np.ndarray:
+        return np.array([idx])
+
+    indexes = dali.fn.external_source(source=index_generator, dtype=dali.types.INT64)
 
     # Read current batch
-    data = dali.fn.external_source(
-        source,
-        num_outputs=2,  # len(self.pipe_outputs),
-        parallel=True,
-        batch=True,
-        prefetch_queue_depth=4,
+    data_x, data_y = dali.fn.python_function(
+        indexes,
+        function=source,
+        batch_processing=True,
+        num_outputs=2,
         device="cpu",
     )
 
     # if self.device.type == "cuda":
     # Move tensors to GPU as external_source won't do that
-    data_x, data_y = [d.gpu() for d in data]
+    data_x = data_x.gpu()
+    data_y = data_y.gpu()
 
     # Set outputs
     return data_x, data_y
