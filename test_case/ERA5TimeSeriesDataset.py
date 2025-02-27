@@ -150,7 +150,7 @@ class SeqZarrSource:
         file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_test.zarr/",
         variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
         num_steps: int = 2,
-        batch_size: int = 8,
+        batch_size: int = 16,
         shuffle: bool = True,
         process_rank: int = 0,
         world_size: int = 1,
@@ -205,18 +205,19 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
-    def __call__(self, indexes: list[np.ndarray]) -> tuple[Tensor, Tensor]:
+    def __call__(self, index: list[np.ndarray]) -> tuple[Tensor, Tensor]:
         # Open Zarr dataset
         if self.zarr_dataset is None:
             self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
-        if indexes[-1] >= self.batch_mapping.shape[0]:
+        index: int = index[0]  # turn [np.ndarray()] with one element to np.ndarray()
+        if index >= self.batch_mapping.shape[0]:
             raise StopIteration()
 
         # Get batch indices
-        batch_idxs: np.ndarray = self.batch_mapping[indexes]
+        batch_idx: np.ndarray = self.batch_mapping[index]
         time_idx: np.ndarray = np.concatenate(
-            [idxs[0] + np.arange(self.num_steps) for idxs in batch_idxs]
+            [idx + np.arange(self.num_steps) for idx in batch_idx]
         )
 
         # Get data
@@ -251,7 +252,7 @@ class SeqZarrSource:
 
 
 @pipeline_def(
-    batch_size=8,
+    batch_size=16,
     num_threads=2,
     prefetch_queue_depth=2,
     py_num_workers=2,
@@ -263,13 +264,10 @@ def seqzarr_pipeline():
     Pipeline to load Zarr stores via a DALI External Source operator.
     """
     # Zarr source
-    source = SeqZarrSource(batch_size=8)
+    source = SeqZarrSource(batch_size=16)
 
-    def index_generator(batch_info: dali.types.BatchInfo):
-        start = batch_info.iteration
-        stop = start + source.batch_size
-
-        return np.arange(start, stop)
+    def index_generator(batch_info: dali.types.BatchInfo) -> np.ndarray:
+        return np.array([batch_info.iteration])
 
     indexes = dali.fn.external_source(
         source=index_generator, dtype=dali.types.INT64, batch_info=True
@@ -280,10 +278,7 @@ def seqzarr_pipeline():
         indexes,
         function=source,
         batch_processing=True,
-        num_outputs=2,  # len(self.pipe_outputs),
-        # parallel=True,
-        # batch=True,
-        # prefetch_queue_depth=4,
+        num_outputs=2,
         device="cpu",
     )
 
