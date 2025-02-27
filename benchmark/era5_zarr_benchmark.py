@@ -14,10 +14,12 @@ from zarr.abc.store import Store
 from zarr.codecs import NvcompZstdCodec, ZstdCodec
 from zarr.storage import LocalStore
 
+from kvikio_zarr_v3 import GDSStore
 
-def get_store(path: Path) -> LocalStore:
+
+def get_store(path: Path, cls: Store = LocalStore) -> LocalStore:
     async def _get_store(path: Path) -> LocalStore:
-        return await LocalStore.open(path)
+        return await cls.open(path)
 
     return asyncio.run(_get_store(path))
 
@@ -49,6 +51,6 @@ def read(
 
 if __name__ == "__main__":
     path = Path("/glade/derecho/scratch/katelynw/era5/rechunked_stacked_test.zarr")
-    store = get_store(path)
+    store = get_store(path, cls=GDSStore)
     read(store, gpu=False)
     read(store, gpu=True)
