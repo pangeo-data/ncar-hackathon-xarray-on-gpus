@@ -205,14 +205,13 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
-    def __call__(
-        self,
-        sample_info: dali.types.BatchInfo,
-    ) -> tuple[Tensor, Tensor, np.ndarray, np.ndarray, np.ndarray]:
+    def __call__(self, sample_info: dali.types.BatchInfo) -> tuple[Tensor, Tensor]:
         # Open Zarr dataset
         if self.zarr_dataset is None:
             self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
+        if isinstance(sample_info, list):
+            sample_info = sample_info[0]
         if sample_info >= self.batch_mapping.shape[0]:
             raise StopIteration()
 
@@ -268,16 +267,21 @@ def seqzarr_pipeline():
     # Zarr source
     source = SeqZarrSource()
 
-    # Update length of dataset
-    # self.total_length: int = len(source) // self.batch_size
+    def index_generator():
+        for i in range(0, len(source)):
+            yield np.array([i])
+
+    indexes = dali.fn.external_source(source=index_generator, dtype=dali.types.INT64)
 
     # Read current batch
-    data = dali.fn.external_source(
-        source,
+    data = dali.fn.python_function(
+        indexes,
+        function=source,
+        batch_processing=True,
         num_outputs=2,  # len(self.pipe_outputs),
-        parallel=True,
-        batch=True,
-        prefetch_queue_depth=4,
+        # parallel=True,
+        # batch=True,
+        # prefetch_queue_depth=4,
         device="cpu",
     )
 
