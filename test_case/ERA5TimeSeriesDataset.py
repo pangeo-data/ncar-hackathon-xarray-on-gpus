@@ -243,7 +243,7 @@ class SeqZarrSource:
         # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
 
         # Return list to satisfy batch_processing=True
-        return [x for x in data_x], [y for y in data_y]
+        return [data_x], [data_y]
 
     def __len__(self):
         if self.batch:
