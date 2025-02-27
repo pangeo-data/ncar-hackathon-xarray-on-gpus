@@ -150,7 +150,7 @@ class SeqZarrSource:
         file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_test.zarr/",
         variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
         num_steps: int = 2,
-        batch_size: int = 1,
+        batch_size: int = 8,
         shuffle: bool = True,
         process_rank: int = 0,
         world_size: int = 1,
@@ -205,20 +205,18 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
-    def __call__(self, sample_info: dali.types.BatchInfo) -> tuple[Tensor, Tensor]:
+    def __call__(self, indexes: list[np.ndarray]) -> tuple[Tensor, Tensor]:
         # Open Zarr dataset
         if self.zarr_dataset is None:
             self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
-        if isinstance(sample_info, list):
-            sample_info = sample_info[0]
-        if sample_info >= self.batch_mapping.shape[0]:
+        if indexes[-1] >= self.batch_mapping.shape[0]:
             raise StopIteration()
 
         # Get batch indices
-        batch_idx: np.ndarray = self.batch_mapping[sample_info]
+        batch_idxs: np.ndarray = self.batch_mapping[indexes]
         time_idx: np.ndarray = np.concatenate(
-            [idx + np.arange(self.num_steps) for idx in batch_idx]
+            [idxs[0] + np.arange(self.num_steps) for idxs in batch_idxs]
         )
 
         # Get data
@@ -233,15 +231,15 @@ class SeqZarrSource:
                 )
             )
         # assert len(data) == 6
-        # assert data[0].shape == (1, 2, 640, 1280)  # BTHW
+        # assert data[0].shape == (8, 2, 640, 1280)  # BTHW
 
         # Stack variables along channel dimension, and split into two along timestep dim
         data_stack = np.stack(data, axis=2)
-        # assert data_stack.shape == (1, 2, 6, 640, 1280)  # BTCHW
+        # assert data_stack.shape == (8, 2, 6, 640, 1280)  # BTCHW
         data_x = data_stack[:, 0, :, :, :]
-        # assert data_x.shape == (1, 6, 640, 1280)  # BCHW
+        # assert data_x.shape == (8, 6, 640, 1280)  # BCHW
         data_y = data_stack[:, 1, :, :, :]
-        # assert data_y.shape == (1, 6, 640, 1280)  # BCHW
+        # assert data_y.shape == (8, 6, 640, 1280)  # BCHW
 
         return (data_x, data_y)
 
@@ -265,13 +263,17 @@ def seqzarr_pipeline():
     Pipeline to load Zarr stores via a DALI External Source operator.
     """
     # Zarr source
-    source = SeqZarrSource()
+    source = SeqZarrSource(batch_size=8)
 
-    def index_generator():
-        for i in range(0, len(source)):
-            yield np.array([i])
+    def index_generator(batch_info: dali.types.BatchInfo):
+        start = batch_info.iteration
+        stop = start + source.batch_size
 
-    indexes = dali.fn.external_source(source=index_generator, dtype=dali.types.INT64)
+        return np.arange(start, stop)
+
+    indexes = dali.fn.external_source(
+        source=index_generator, dtype=dali.types.INT64, batch_info=True
+    )
 
     # Read current batch
     data = dali.fn.python_function(
