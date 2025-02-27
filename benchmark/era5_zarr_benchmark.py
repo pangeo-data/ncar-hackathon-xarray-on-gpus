@@ -51,6 +51,6 @@ def read(
 
 if __name__ == "__main__":
     path = Path("/glade/derecho/scratch/katelynw/era5/rechunked_stacked_test.zarr")
-    store = get_store(path, store=GDSStore)
+    store = get_store(path, cls=GDSStore)
     read(store, gpu=False)
     read(store, gpu=True)
