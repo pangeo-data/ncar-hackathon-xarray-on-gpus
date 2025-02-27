@@ -205,7 +205,7 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
-    def __call__(self, index: list[np.ndarray]) -> tuple[Tensor, Tensor]:
+    def __call__(self, index: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         # Open Zarr dataset
         if self.zarr_dataset is None:
             self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
@@ -231,16 +231,16 @@ class SeqZarrSource:
                     batch_data, (self.batch_size, self.num_steps, *batch_data.shape[1:])
                 )
             )
-        # assert len(data) == 6
-        # assert data[0].shape == (8, 2, 640, 1280)  # BTHW
+        # assert len(data) == 6  # number of variables
+        # assert data[0].shape == (16, 2, 640, 1280)  # BTHW
 
         # Stack variables along channel dimension, and split into two along timestep dim
         data_stack = np.stack(data, axis=2)
-        # assert data_stack.shape == (8, 2, 6, 640, 1280)  # BTCHW
+        # assert data_stack.shape == (16, 2, 6, 640, 1280)  # BTCHW
         data_x = data_stack[:, 0, :, :, :]
-        # assert data_x.shape == (8, 6, 640, 1280)  # BCHW
+        # assert data_x.shape == (16, 6, 640, 1280)  # BCHW
         data_y = data_stack[:, 1, :, :, :]
-        # assert data_y.shape == (8, 6, 640, 1280)  # BCHW
+        # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
 
         return (data_x, data_y)
 
