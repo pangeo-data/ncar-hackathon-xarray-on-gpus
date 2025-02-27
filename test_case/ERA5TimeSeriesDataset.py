@@ -147,7 +147,7 @@ class SeqZarrSource:
 
     def __init__(
         self,
-        file_store: str = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv/SixHourly_y_TOTAL_2022-01-01_2022-12-31_staged.zarr/",  #: fsspec.mapping.FSMap,
+        file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_test.zarr/",
         variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
         num_steps: int = 2,
         batch_size: int = 1,
