@@ -1,0 +1,38 @@
+[project]
+name = "benchmark"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+ "kvikio-cu12>=25.2.0",
+ "nvtx>=0.2.11",
+ "zarr",
+ "ipython",
+ "xarray",
+ "rich>=13.9.4",
+ "kvikio-zarr-v3",
+]
+
+[tool.uv.sources]
+zarr = { git = "https://github.com/akshaysubr/zarr-python", rev = "gpu-codecs" }  # need to push tags here
+# zarr = { git = "https://github.com/TomAugspurger/zarr-python", rev = "gpu-codecs" }
+# xarray = { git = "https://github.com/pydata/xarray", rev = "fix-cupy"}
+xarray = { git = "https://github.com/dcherian/xarray", rev = "fix-cupy" }
+kvikio_zarr_v3 = { git = "https://github.com/TomAugspurger/kvikio-zarr-v3" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.7",
+]
+
+[tool.uv]
+override-dependencies = [
+    # "zarr @ git+https://github.com/akshaysubr/zarr-python@gpu-codecs",
+    "zarr==3.0.4",
+    "nvidia-nvcomp-cu12==4.2.0.14",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "C", "B", "UP", "N", "S", "ERA", "PD", "EXE", "PGH"]
+
