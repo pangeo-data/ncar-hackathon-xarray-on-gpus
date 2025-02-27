@@ -264,7 +264,7 @@ class SeqZarrSource:
 
 
 @pipeline_def(
-    batch_size=16,
+    batch_size=4,
     num_threads=2,
     prefetch_queue_depth=2,
     py_num_workers=2,
@@ -276,7 +276,7 @@ def seqzarr_pipeline():
     Pipeline to load Zarr stores via a DALI External Source operator.
     """
     # Zarr source
-    source = SeqZarrSource(batch_size=16)
+    source = SeqZarrSource(batch_size=4)
 
     def index_generator(idx: int) -> np.ndarray:
         return np.array([idx])
