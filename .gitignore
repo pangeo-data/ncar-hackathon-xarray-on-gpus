@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
 # Data files and folders
 data/**
 !data/**/
