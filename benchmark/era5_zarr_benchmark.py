@@ -1,0 +1,54 @@
+import asyncio
+from contextlib import nullcontext
+import math
+import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
+import nvtx
+
+import zarr
+from zarr.abc.codec import Codec
+from zarr.abc.store import Store
+from zarr.codecs import NvcompZstdCodec, ZstdCodec
+from zarr.storage import LocalStore
+
+
+def get_store(path: Path) -> LocalStore:
+    async def _get_store(path: Path) -> LocalStore:
+        return await LocalStore.open(path)
+
+    return asyncio.run(_get_store(path))
+
+@nvtx.annotate(color="red", domain="benchmark")
+def read(
+    store: Store,
+    gpu: bool = True,
+) -> None:
+    with zarr.config.enable_gpu() if gpu else nullcontext():
+        g = zarr.open_group(store=store)
+        a = g.get("combined")
+        size = tuple(a.shape)
+        print(f"Opened array with compressors: {a.compressors}")
+
+        color = "green" if gpu else "blue"
+        start_time = time.time()
+        niters = min(100, size[0] // 2)
+        for i in range(niters):
+            with nvtx.annotate(message=f"iteration {i}", color=color):
+                start_time_index = 2 * i
+                end_time_index = 2 * (i + 1)
+                result = a[start_time_index:end_time_index, :, :, :]
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        total_bytes_gb = 2.0 * (niters) * math.prod(size[1:]) / (1024.0) ** 3
+        print(f"Total time to read data: {elapsed_time} s")
+        print(f"Effective I/O bandwidth: {total_bytes_gb / elapsed_time} GB/s")
+
+
+if __name__ == "__main__":
+    path = Path("/glade/derecho/scratch/katelynw/era5/rechunked_stacked_test.zarr")
+    store = get_store(path)
+    read(store, gpu=False)
+    read(store, gpu=True)
