@@ -311,8 +311,13 @@ def main():
         model.train()
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
-        
-        for i, (inputs, targets) in enumerate(train_loader):
+
+        for i, batch in enumerate(train_loader):
+            if len(batch) == 1:  # DALI
+                inputs = batch[0]["input"].squeeze(dim=0)
+                targets = batch[0]["target"].squeeze(dim=0)
+            else:  # non-DALI
+                inputs, targets = batch
             start_time = time.time()  # Start time for the step
 
             # Move tensors to GPU if available
@@ -363,9 +368,14 @@ def main():
         epoch_val_losses = []
 
         with torch.no_grad():
-            for i, (inputs, targets) in enumerate(val_loader):
+            for i, batch in enumerate(val_loader):
+                if len(batch) == 1:  # DALI
+                    inputs = batch[0]["input"].squeeze(dim=0)
+                    targets = batch[0]["target"].squeeze(dim=0)
+                else:  # non-DALI
+                    inputs, targets = batch
                 inputs, targets = inputs.to(device), targets.to(device)
-                
+
                 outputs = model(inputs)
                 loss, loss_components = custom_loss(outputs, targets)
                 epoch_val_losses.append(loss_components)
