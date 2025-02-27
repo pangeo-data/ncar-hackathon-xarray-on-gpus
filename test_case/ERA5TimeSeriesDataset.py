@@ -267,12 +267,10 @@ def seqzarr_pipeline():
     # Zarr source
     source = SeqZarrSource(batch_size=16)
 
-    def index_generator(batch_info: dali.types.BatchInfo) -> np.ndarray:
-        return np.array([batch_info.iteration])
+    def index_generator(idx: int) -> np.ndarray:
+        return np.array([idx])
 
-    indexes = dali.fn.external_source(
-        source=index_generator, dtype=dali.types.INT64, batch_info=True
-    )
+    indexes = dali.fn.external_source(source=index_generator, dtype=dali.types.INT64)
 
     # Read current batch
     data_x, data_y = dali.fn.python_function(
