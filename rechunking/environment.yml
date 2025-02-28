@@ -1,0 +1,11 @@
+name: rechunking
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - jupyterlab
+  - xarray
+  - zarr
+  - dask
+  - dask-jobqueue
