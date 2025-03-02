@@ -173,8 +173,8 @@ def main():
     # --------------------------
     # Initialize the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
-    target_vars = ['t2m'] # Predict temperature only for now!!!!
+    input_vars = ["combined"] * 71  # 6 input variables
+    target_vars = ["combined"]  # Predict temperature only for now!!!!
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
@@ -314,8 +314,8 @@ def main():
 
         for i, batch in enumerate(train_loader):
             if len(batch) == 1:  # DALI
-                inputs = batch[0]["input"].squeeze(dim=0)
-                targets = batch[0]["target"].squeeze(dim=0)
+                inputs = batch[0]["input"].squeeze(dim=(0, 2))
+                targets = batch[0]["target"].squeeze(dim=(0, 2))
             else:  # non-DALI
                 inputs, targets = batch
             start_time = time.time()  # Start time for the step
@@ -370,8 +370,8 @@ def main():
         with torch.no_grad():
             for i, batch in enumerate(val_loader):
                 if len(batch) == 1:  # DALI
-                    inputs = batch[0]["input"].squeeze(dim=0)
-                    targets = batch[0]["target"].squeeze(dim=0)
+                    inputs = batch[0]["input"].squeeze(dim=(0, 2))
+                    targets = batch[0]["target"].squeeze(dim=(0, 2))
                 else:  # non-DALI
                     inputs, targets = batch
                 inputs, targets = inputs.to(device), targets.to(device)
