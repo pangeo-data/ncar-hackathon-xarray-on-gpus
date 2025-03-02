@@ -135,7 +135,6 @@ class PyTorchERA5Dataset(Dataset):
         if self.use_synthetic:
             x_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
             y_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
-            print ("Synthetic data")
         else:
             x_data = self.ds_x.isel(time=index).to_array().values
             y_data = self.ds_y.isel(time=index).to_array().values
