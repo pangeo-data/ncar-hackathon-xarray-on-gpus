@@ -16,3 +16,4 @@ dependencies:
     - torchaudio
     - nvidia-dali-cuda120
     - nvtx
+    - git+https://github.com/TomAugspurger/kvikio-zarr-v3
