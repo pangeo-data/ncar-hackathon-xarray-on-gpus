@@ -10,6 +10,7 @@ import argparse
 import xarray as xr
 import numpy as np
 
+import itertools 
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -61,10 +62,24 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
     return total_loss, loss_components
 
+def measure_gpu_throughput(model, inputs, batch_size):
+    inputs = inputs.to('cuda')
+    model = model.to('cuda')
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    with torch.no_grad():
+        for i in range(0, inputs.size(0), batch_size):
+            output = model(inputs[i:i + batch_size])
+    end.record()
+    torch.cuda.synchronize()
+    latency = start.elapsed_time(end)
+    throughput = inputs.size(0) * batch_size / latency
+    return throughput
 
 def main():
     num_epochs_default = 2
-    batch_size_default = 16
+    batch_size_default = 4
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
     parser = argparse.ArgumentParser(
@@ -218,6 +233,7 @@ def main():
 
     # --------------------------
     # 2) validation dataset
+    # --------------------------
     val_dataset = ERA5Dataset(
         data_path=data_path,
         start_year=val_start_year,
@@ -260,6 +276,7 @@ def main():
         activation=ACTIVATION,
     )
 
+    # --------------------------
     # Move the model to GPU if available
     if distributed:
         torch.cuda.set_device(LOCAL_RANK)
@@ -281,23 +298,23 @@ def main():
     # --------------------------
     # Define the loss function and optimizer
     criterion = torch.nn.L1Loss() 
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)  
 
     # --------------------------
     # Training Loop
-    print("Starting training loop...")
-
 
     training_start_time = time.time()
     
     for epoch in range(num_epochs):
+        
         epoch_start_time = time.time()
         model.train()
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
         
-        for i, (inputs, targets) in enumerate(train_loader):
+        #for i, (inputs, targets) in enumerate(train_loader):
+        for i, (inputs, targets) in itertools.islice(enumerate(val_loader), 2):
+
             start_time = time.time()  # Start time for the step
 
             if not argv.notraining:
@@ -332,10 +349,12 @@ def main():
             
             else:
                 # Skip training for benchmarking purposes
+                # Time should come out as 0.0
                 step_time = (time.time() - start_time) 
                 print (f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
                     f"Time per training step: {step_time:.4f} sec.")
-
+    
+        stop_train_time = time.time()
 
         if not argv.notraining:
         # Calculate average training metrics for this epoch for training cases!
@@ -354,9 +373,11 @@ def main():
         model.eval()
         epoch_val_losses = []
 
-
+        start_val_time = time.time()
         with torch.no_grad():
-            for i, (inputs, targets) in enumerate(val_loader):
+            #for i, (inputs, targets) in enumerate(val_loader):
+            for i, (inputs, targets) in itertools.islice(enumerate(val_loader), 2):
+
                 step_start_time = time.time()
                 if not argv.notraining:
                     inputs, targets = inputs.to(device), targets.to(device)
@@ -364,18 +385,22 @@ def main():
                     loss, loss_components = custom_loss(outputs, targets)
                     epoch_val_losses.append(loss_components)
                     torch.cuda.synchronize()
-                    step_time = (time.time() - step_start_time)  # Compute elapsed time in milliseconds
+                    step_val_time = (time.time() - step_start_time)  # Compute elapsed time in milliseconds
                     print(f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
                         f"Validation Loss: {loss.item():.4f},"
                         f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f}",
-                        f"Time per validation step: {step_time:.4f} sec.")
+                        f"Time per validation step: {step_val_time:.4f} sec.")
                 
                 else:
                     # Skip validation for benchmarking purposes
-                    step_step_time = (time.time() - step_start_time) 
-                    print (f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
-                        f"Time per validation step: {step_time:.4f} sec.")
 
+                    step_val_time = (time.time() - step_start_time) 
+                    print (f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
+                        f"Time per validation step: {step_val_time:.4f} sec.")
+
+        
+        torch.cuda.synchronize()
+        stop_val_time = time.time()
 
         if not argv.notraining:
             # Calculate average validation metrics
@@ -407,29 +432,38 @@ def main():
                 print(f"Saved model checkpoint to {checkpoint_path}!")
 
 
-
-                
-
         if WORLD_RANK == 0:
             epoch_time = (time.time() - epoch_start_time)
+            val_time = (stop_val_time - start_val_time)
+            train_time = (stop_train_time - epoch_start_time) 
             print(f'Epoch [{epoch+1}/{num_epochs}], Time this epoch: {epoch_time:.2f} seconds')
-
-            if distributed:
-                total_samples = len(train_loader.dataset) * WORLD_SIZE * num_epochs / batch_size
-            else:
-                total_samples = len(train_loader.dataset) * num_epochs / batch_size
+            print(f'Epoch [{epoch+1}/{num_epochs}], Training time this epoch: {train_time:.2f} seconds')
+            print(f'Epoch [{epoch+1}/{num_epochs}], Validation time this epoch: {val_time:.2f} seconds')
+            print(f'Epoch [{epoch+1}/{num_epochs}], Time per training step   : {train_time/ len(train_loader):.2f} seconds')
+            print(f'Epoch [{epoch+1}/{num_epochs}], Time per validation step : {val_time/ len(val_loader):.2f} seconds')
             
-            print(f"Training samples processed this epoch: {total_samples}")
-            print(f"Average Throughput: {total_samples / epoch_time:.2f} samples/sec.")
+            if distributed:
+                #print ("len(val_loader.dataset) : ", len(val_loader.dataset))
+                total_samples = len(val_loader) * WORLD_SIZE
+            else:
+                total_samples = len(val_loader)
+            
 
-            # Calculate data throughput in MB/s
-            sample_size_mb = sum([input.element_size() * input.nelement() for input, _ in train_loader]) / (1024 * 1024)
-            throughput_mb_s = (sample_size_mb * total_samples) / epoch_time
-            print(f"Average Throughput: {throughput_mb_s:.2f} MB/s.")
+            print(f"Samples processed this epoch: {total_samples}")
+            print(f"Average throughput this epoch: {total_samples / val_time:.2f} samples/sec.")
 
-    total_time = (time.time() - training_start_time) 
-    print(f"Total training time: {total_time:.2f} seconds!")
-    print ('-'*50)
+            #calculate sample size in MB
+            # each sample is snap of input variable and target variables 
+            sample_size = (inputs.element_size() * inputs.nelement() + targets.element_size() * targets.nelement())/batch_size
+            sample_size_mb =  sample_size / 1024 / 1024
+
+            print(f"Sample size: {sample_size_mb:.2f} MB")
+            print(f"Average throughput per MB: {(total_samples * sample_size_mb)/ val_time:.2f} MB/sec.")
+
+    if WORLD_RANK == 0:
+        total_time = (time.time() - training_start_time) 
+        print(f"Total training time: {total_time:.2f} seconds!")
+        print ('-'*50)
 
 if __name__ == "__main__":
     main()
