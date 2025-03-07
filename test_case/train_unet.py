@@ -79,7 +79,7 @@ def measure_gpu_throughput(model, inputs, batch_size):
 
 def main():
     num_epochs_default = 2
-    batch_size_default = 4
+    batch_size_default = 16
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
     parser = argparse.ArgumentParser(
@@ -129,6 +129,8 @@ def main():
     distributed = argv.distributed
     use_synthetic = argv.synth
 
+    if use_synthetic:
+        print("Using synthetic data for training!")
     # Set random seeds for reproducibility!
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
@@ -200,7 +202,7 @@ def main():
     # Initialize the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
-    target_vars = ['t2m'] # Predict temperature only for now!!!!
+    target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
@@ -304,6 +306,13 @@ def main():
     # Training Loop
 
     training_start_time = time.time()
+
+    epoch_total_times = []
+    epoch_train_times = []
+    epoch_val_times = []
+
+    throughput_samples = []
+    throughput_mb = []
     
     for epoch in range(num_epochs):
         
@@ -404,6 +413,8 @@ def main():
 
         if not argv.notraining:
             # Calculate average validation metrics
+            if distributed: 
+                torch.distributed.barrier()
             avg_val_metrics = {
                 'loss': sum(entry['total'] for entry in epoch_val_losses) / len(epoch_val_losses),
                 'rmse': sum(entry['rmse'] for entry in epoch_val_losses) / len(epoch_val_losses)
@@ -430,7 +441,6 @@ def main():
                 }, checkpoint_path)
 
                 print(f"Saved model checkpoint to {checkpoint_path}!")
-
 
         if WORLD_RANK == 0:
             epoch_time = (time.time() - epoch_start_time)
@@ -460,9 +470,22 @@ def main():
             print(f"Sample size: {sample_size_mb:.2f} MB")
             print(f"Average throughput per MB: {(total_samples * sample_size_mb)/ val_time:.2f} MB/sec.")
 
+            epoch_total_times.append(epoch_time)
+            epoch_train_times.append(train_time)
+            epoch_val_times.append(val_time)
+            throughput_samples.append(total_samples / val_time)
+            throughput_mb.append((total_samples * sample_size_mb)/ val_time)
+
     if WORLD_RANK == 0:
+        print ('-'*50)
+        print ('Training completed!')
         total_time = (time.time() - training_start_time) 
         print(f"Total training time: {total_time:.2f} seconds!")
+        print(f"Average time per epoch: {np.mean(epoch_total_times):.2f} seconds")
+        print(f"Average training time per epoch: {np.mean(epoch_train_times):.2f} seconds")
+        print(f"Average validation time per epoch: {np.mean(epoch_val_times):.2f} seconds")
+        print(f"Average throughput per epoch: {np.mean(throughput_samples):.2f} samples/sec.")
+        print(f"Average throughput per epoch: {np.mean(throughput_mb):.2f} MB/sec.")
         print ('-'*50)
 
 if __name__ == "__main__":
