@@ -272,6 +272,8 @@ class SeqZarrSource:
     device_id=0,
     py_start_method="spawn",
 )
+
+
 def seqzarr_pipeline():
     """
     Pipeline to load Zarr stores via a DALI External Source operator.
@@ -302,7 +304,9 @@ def seqzarr_pipeline():
     return data_x, data_y
 
 
-# %%
+
+# -------------------------------------------------#
+# ----------------- Example usage -----------------#
 if __name__ == "__main__":
 
     ## Example usage of the ERA5TimeSeriesDataset class
