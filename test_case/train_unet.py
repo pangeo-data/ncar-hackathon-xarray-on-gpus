@@ -10,7 +10,6 @@ import argparse
 import xarray as xr
 import numpy as np
 
-import itertools 
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -321,8 +320,7 @@ def main():
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
         
-        #for i, (inputs, targets) in enumerate(train_loader):
-        for i, (inputs, targets) in itertools.islice(enumerate(val_loader), 2):
+        for i, (inputs, targets) in enumerate(train_loader):
 
             start_time = time.time()  # Start time for the step
 
@@ -384,8 +382,7 @@ def main():
 
         start_val_time = time.time()
         with torch.no_grad():
-            #for i, (inputs, targets) in enumerate(val_loader):
-            for i, (inputs, targets) in itertools.islice(enumerate(val_loader), 2):
+            for i, (inputs, targets) in enumerate(val_loader):
 
                 step_start_time = time.time()
                 if not argv.notraining:
