@@ -8,7 +8,7 @@ dependencies:
   - jupyterlab~=4.3.5
   - nvidia-dali-python~=1.45.0
   - nvtx~=0.2.11
-  - python=3.11
+  - python=3.12
   - pip~=25.0
   - pytorch~=2.6.0
   - segmentation-models-pytorch~=0.4.0
