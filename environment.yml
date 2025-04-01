@@ -4,10 +4,17 @@ channels:
   - nodefaults
 dependencies:
   - cupy~=13.3.0
+  - dask-jobqueue~=0.9.0
+  - rapidsai-nightly::kvikio>=25.04.00a
   - jupyterlab~=4.3.5
   - nvidia-dali-python~=1.45.0
-  - python=3.11
+  - nvtx~=0.2.11
+  - python=3.12
+  - pip~=25.0
   - pytorch~=2.6.0
   - segmentation-models-pytorch~=0.4.0
-  - xarray>=2025.1.2
+  - xarray>=2025.3.0
   - zarr~=3.0.3
+  - pip:
+    - nvidia-nvcomp-cu12
+    - zarr @ git+https://github.com/akshaysubr/zarr-python.git@gpu-codecs
