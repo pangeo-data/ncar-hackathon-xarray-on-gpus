@@ -15,8 +15,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import segmentation_models_pytorch as smp
-from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset
+from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset, seqzarr_pipeline
+
 
 
 def set_random_seeds(random_seed=0):
@@ -119,6 +121,11 @@ def main():
         action='store_true',
         help="Use synthetic data to skip loading ERA5 data.",
     )
+    parser.add_argument(
+        "--use-dali",
+        action="store_true",
+        help="Use DALI pipeline instead of regular Pytorch Dataloader.",
+    )
 
 
     argv = parser.parse_args()
@@ -127,6 +134,7 @@ def main():
     learning_rate = argv.learning_rate
     distributed = argv.distributed
     use_synthetic = argv.synth
+    use_dali = argv.use_dali
 
     if use_synthetic:
         print("Using synthetic data for training!")
@@ -200,8 +208,12 @@ def main():
     # --------------------------
     # Initialize the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
-    target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
+    if use_dali:
+        input_vars = ["combined"] * 71  # 6 input variables
+        target_vars = ["combined"]  # Predict temperature only for now!!!!
+    else:
+        input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
+        target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
@@ -210,53 +222,76 @@ def main():
     # Create train and validation datasets
     # -----------------------------------------------------------------------
     # 1) Training dataset
-    train_dataset = ERA5Dataset(
-        data_path=data_path,
-        start_year=train_start_year,
-        end_year=train_end_year,
-        input_vars=input_vars,
-        target_vars=target_vars,
-        forecast_step=1,
-        use_synthetic=use_synthetic
-    )
+
+    if use_dali:
+        pipe_train = seqzarr_pipeline()
+        train_loader = DALIGenericIterator(
+            pipelines=pipe_train, output_map=["input", "target"]
+        )
+        if distributed:
+            raise NotImplementedError("DALI pipeline with distributed not working yet")
+    elif not use_dali:
+        train_dataset = ERA5Dataset(
+            data_path=data_path,
+            start_year=train_start_year,
+            end_year=train_end_year,
+            input_vars=input_vars,
+            target_vars=target_vars,
+            forecast_step=1,
+            use_synthetic=use_synthetic
+        )
     
-    mean_file = '/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc' # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-    std_file = '/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc'  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-    train_dataset.normalize(mean_file=mean_file, std_file=std_file)
-    train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
+        mean_file = '/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc' # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        std_file = '/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc'  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        train_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
 
 
-    if distributed:
-        train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
-    else:
-        train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
+        if distributed:
+            train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
+        else:
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
 
     # --------------------------
     # 2) validation dataset
     # --------------------------
-    val_dataset = ERA5Dataset(
-        data_path=data_path,
-        start_year=val_start_year,
-        end_year=val_end_year,
-        input_vars=input_vars,
-        target_vars=target_vars
-    )
-    val_dataset.normalize(mean_file=mean_file, std_file=std_file)
-    val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
-
-    if distributed:
-        val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
-        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
-    else:
-        val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
+    if use_dali:
+        pipe_val = seqzarr_pipeline()
+        val_loader = DALIGenericIterator(
+            pipelines=pipe_val, output_map=["input", "target"]
+        )
+        if distributed:
+            raise NotImplementedError("DALI pipeline with distributed not working yet")
+    elif not use_dali: # classic pytorch dataset    
+        val_dataset = ERA5Dataset(
+            data_path=data_path,
+            start_year=val_start_year,
+            end_year=val_end_year,
+            input_vars=input_vars,
+            target_vars=target_vars
+        )
+        val_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
+    
+        print ("-"*50)
+        print ("use_dali:", use_dali)
+        print ("distributed:", distributed)
+        if distributed:
+            val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
+            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
+        else:
+            #val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
+            val_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
 
 
     if WORLD_RANK == 0:
         print("Data loaded!")
-        print(f"Train samples: {len(train_loader.dataset)}")
-        print(f"Validation samples:  {len(val_loader.dataset)}")
-        print ('-'*50)
+        if not use_dali:
+            print("Using PyTorch DataLoader")
+            print(f"Train samples: {len(train_loader.dataset)}")
+            print(f"Validation samples:  {len(val_loader.dataset)}")
+            print ('-'*50)
 
 
     # --------------------------
@@ -320,9 +355,14 @@ def main():
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
         
-        for i, (inputs, targets) in enumerate(train_loader):
-
+        for i, batch in enumerate(train_loader):
             start_time = time.time()  # Start time for the step
+
+            if len(batch) == 1:  # DALI
+                inputs = batch[0]["input"].squeeze(dim=(0, 2))
+                targets = batch[0]["target"].squeeze(dim=(0, 2))
+            else:  # non-DALI
+                inputs, targets = batch
 
             if not argv.notraining:
                 # Move tensors to GPU if available
@@ -382,10 +422,18 @@ def main():
 
         start_val_time = time.time()
         with torch.no_grad():
-            for i, (inputs, targets) in enumerate(val_loader):
+
+            #for i, (inputs, targets) in enumerate(val_loader):
+            for i, batch in enumerate(val_loader):
 
                 step_start_time = time.time()
                 if not argv.notraining:
+                    if len(batch) ==1: # DALI
+                        inputs = batch[0]["input"].squeeze(dim=(0, 2))
+                        targets = batch[0]["target"].squeeze(dim=(0, 2))
+                    else:
+                        inputs, targets = batch
+                        
                     inputs, targets = inputs.to(device), targets.to(device)
                     outputs = model(inputs)
                     loss, loss_components = custom_loss(outputs, targets)
