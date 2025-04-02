@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-This dummy class is created for handling ERA-5 organized by year in Zarr format.
+This class is created for handling ERA-5 organized by year in Zarr format.
 This file contains two classes:
 1. ERA5Dataset: A custom dataset class to load multiple years of ERA5 data (1 zarr store per year -- but why?). (No PyTorch dependency)
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
@@ -26,7 +26,7 @@ class ERA5Dataset:
     Each __getitem__(index) returns (input, target) as NumPy arrays.
     """
 
-    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,forecast_step=1):
+    def __init__(self, data_path, start_year, end_year, input_vars, target_vars=None,forecast_step=1, use_synthetic=False):
         """
         Initializes the dataset.
 
@@ -44,6 +44,7 @@ class ERA5Dataset:
         self.target_vars = target_vars if target_vars is not None else input_vars
         self.normalized= False
         self.forecast_step = forecast_step
+        self.use_synthetic = True if use_synthetic else False
 
         # load all zarr:
         self.dataset = self._load_data()
@@ -95,8 +96,12 @@ class ERA5Dataset:
 
     def __getitem__(self, index):
         """Enable direct indexing"""
-        x_data = self.ds_x.isel(time=index).to_array().values
-        y_data = self.ds_y.isel(time=index).to_array().values
+        if self.use_synthetic:
+            x_data = np.zeros([6, 640, 1280], dtype=np.float32)
+            y_data = np.zeros([6, 640, 1280], dtype=np.float32)
+        else:
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
         return (x_data, y_data)
  
 
@@ -113,6 +118,7 @@ class PyTorchERA5Dataset(Dataset):
         self.era5_dataset = era5_dataset
         self.forecast_step = forecast_step
         self.ds_x, self.ds_y = self.era5_dataset.fetch_timeseries(forecast_step=self.forecast_step)
+        self.use_synthetic = self.era5_dataset.use_synthetic
     
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -128,14 +134,20 @@ class PyTorchERA5Dataset(Dataset):
         Returns:
             tuple: (input_tensor, target_tensor)
         """
-        # Extract data at the given index
-        x_data = self.ds_x.isel(time=index).to_array().values
-        y_data = self.ds_y.isel(time=index).to_array().values
-
-        # Convert to PyTorch tensors
-        x_tensor = torch.from_numpy(x_data).float()
-        y_tensor = torch.from_numpy(y_data).float()
-
+        if self.use_synthetic:
+            x_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
+            y_tensor = torch.zeros([6, 640, 1280], dtype=torch.float32)
+        else:
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
+            # Extract data at the given index
+            x_data = self.ds_x.isel(time=index).to_array().values
+            y_data = self.ds_y.isel(time=index).to_array().values
+    
+            # Convert to PyTorch tensors
+            x_tensor = torch.from_numpy(x_data).float()
+            y_tensor = torch.from_numpy(y_data).float()
+    
         return x_tensor, y_tensor
 
 
@@ -271,6 +283,8 @@ class SeqZarrSource:
     device_id=0,
     py_start_method="spawn",
 )
+
+
 def seqzarr_pipeline():
     """
     Pipeline to load Zarr stores via a DALI External Source operator.
@@ -306,7 +320,9 @@ def seqzarr_pipeline():
     return data_x, data_y
 
 
-# %%
+
+# -------------------------------------------------#
+# ----------------- Example usage -----------------#
 if __name__ == "__main__":
 
     ## Example usage of the ERA5TimeSeriesDataset class

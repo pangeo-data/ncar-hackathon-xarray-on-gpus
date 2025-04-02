@@ -4,7 +4,7 @@ To run on 1 GPU, use the following command:
 
 ```bash
 module load conda
-conda activate /glade/work/negins/conda_envs/credit-casper
+conda activate /glade/work/weiji/conda-envs/gpuhackathon
 ```
 
 To run on 1 GPU, use the following command:
@@ -18,6 +18,31 @@ To run on single node multi-GPU, use the following command:
 torchrun --nnodes=1 --nproc-per-node=4 train_unet.py --distributed
 ```
 
+To run with nsys:
+
+```bash
+module purge
+module load ncarenv/23.09
+module reset
+module load cuda
+```
+Check the result of the following matches `/glade/u/apps/common/23.08/spack/opt/spack/cuda/12.2.1/bin/nsys`:
+
+```bash
+which nsys
+```
+
+Then run with nsys profiling with
+
+```
+nsys profile -t nvtx,cuda,osrt --gpu-metrics-device all --force-overwrite=true --output=training_benchmark python train_unet.py
+```
+
+To run without data loading:
+
+```
+export synthetic="True"; nsys profile -t nvtx,cuda,osrt --gpu-metrics-device all --force-overwrite=true --output=training_benchmark python train_unet.py
+```
 
 ----------------
 
