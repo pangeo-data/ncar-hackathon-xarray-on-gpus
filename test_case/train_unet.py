@@ -201,11 +201,11 @@ def main():
     # Initialize the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
-            input_vars = ["combined"] * 71  # 6 input variables
-            target_vars = ["combined"]  # Predict temperature only for now!!!!
-        else:
-            input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
-            target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
+        input_vars = ["combined"] * 71  # 6 input variables
+        target_vars = ["combined"]  # Predict temperature only for now!!!!
+    else:
+        input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
+        target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
