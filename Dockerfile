@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ARG PYT_VER=25.02
-FROM nvcr.io/nvidia/pytorch:$PYT_VER-py3 as builder
+FROM nvcr.io/nvidia/pytorch:$PYT_VER-py3
 
 # Update pip and setuptools
 RUN pip install --upgrade pip setuptools  
