@@ -1,3 +1,0 @@
-915+1 records in
-915+1 records out
-9600000128 bytes (9.6 GB, 8.9 GiB) copied, 1.16563 s, 8.2 GB/s

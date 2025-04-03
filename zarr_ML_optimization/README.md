@@ -1,5 +1,6 @@
-# How to run!
+# Zarr ML end-to-end example with DALI
 
+## How to run!
 To run on 1 GPU, use the following command:
 
 ```bash
