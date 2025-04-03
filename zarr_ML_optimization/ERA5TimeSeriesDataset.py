@@ -6,7 +6,9 @@ This file contains two classes:
 2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
 """
 import os
+from contextlib import nullcontext
 
+import cupy as cp
 import numpy as np
 import nvidia.dali as dali
 import torch
@@ -159,14 +161,15 @@ class SeqZarrSource:
 
     def __init__(
         self,
-        file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_test.zarr/",
-        variables: list[str] = ["t2m", "V500", "U500", "T500", "Z500", "Q500"],
+        file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_stacked_test.zarr",
+        variables: list[str] = ["combined"],
         num_steps: int = 2,
         batch_size: int = 16,
         shuffle: bool = True,
         process_rank: int = 0,
         world_size: int = 1,
         batch: bool = True,
+        gpu: bool = True,
     ):
         # Set up parameters
         self.file_store = file_store
@@ -175,6 +178,7 @@ class SeqZarrSource:
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.batch = batch
+        self.gpu = gpu
 
         # Check if all zarr arrays have the same first dimension
         _zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
@@ -218,44 +222,51 @@ class SeqZarrSource:
             self._call = self._sample_call
 
     def __call__(self, index: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-        # Open Zarr dataset
-        if self.zarr_dataset is None:
-            self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
+        with zarr.config.enable_gpu() if self.gpu else nullcontext():
+            # Open Zarr dataset
+            if self.zarr_dataset is None:
+                self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
-        index: int = index[0]  # turn [np.ndarray()] with one element to np.ndarray()
-        if index >= self.batch_mapping.shape[0]:
-            raise StopIteration()
+            index: int = index[
+                0
+            ]  # turn [np.ndarray()] with one element to np.ndarray()
+            if index >= self.batch_mapping.shape[0]:
+                raise StopIteration()
 
-        # Get batch indices
-        batch_idx: np.ndarray = self.batch_mapping[index]
-        time_idx: np.ndarray = np.concatenate(
-            [idx + np.arange(self.num_steps) for idx in batch_idx]
-        )
-
-        # Get data
-        data = []
-
-        # Get slices
-        for i, variable in enumerate(self.variables):
-            batch_data = self.zarr_dataset[variable][time_idx]
-            data.append(
-                np.reshape(
-                    batch_data, (self.batch_size, self.num_steps, *batch_data.shape[1:])
-                )
+            # Get batch indices
+            if self.gpu:
+                self.batch_mapping = cp.asanyarray(self.batch_mapping)
+            batch_idx: np.ndarray = self.batch_mapping[index]
+            time_idx: np.ndarray = cp.concatenate(
+                [idx + cp.arange(self.num_steps) for idx in batch_idx]
             )
-        # assert len(data) == 6  # number of variables
-        # assert data[0].shape == (16, 2, 640, 1280)  # BTHW
+            # print(time_idx)
 
-        # Stack variables along channel dimension, and split into two along timestep dim
-        data_stack = np.stack(data, axis=2)
-        # assert data_stack.shape == (16, 2, 6, 640, 1280)  # BTCHW
-        data_x = data_stack[:, 0, :, :, :]
-        # assert data_x.shape == (16, 6, 640, 1280)  # BCHW
-        data_y = data_stack[:, 1, :, :, :]
-        # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
+            # Get data
+            data = []
 
-        # Return list to satisfy batch_processing=True
-        return [data_x], [data_y]
+            # Get slices
+            for i, variable in enumerate(self.variables):
+                batch_data = self.zarr_dataset[variable][time_idx.tolist()]
+                data.append(
+                    cp.reshape(
+                        batch_data,
+                        (self.batch_size, self.num_steps, *batch_data.shape[1:]),
+                    )
+                )
+            # assert len(data) == 6  # number of variables
+            # assert data[0].shape == (16, 2, 640, 1280)  # BTHW
+
+            # Stack variables along channel dimension, and split into two along timestep dim
+            data_stack = cp.stack(data, axis=2)
+            # assert data_stack.shape == (16, 2, 6, 640, 1280)  # BTCHW
+            data_x = data_stack[:, 0, :, :, :]
+            # assert data_x.shape == (16, 6, 640, 1280)  # BCHW
+            data_y = data_stack[:, 1, :, :, :]
+            # assert data_y.shape == (16, 6, 640, 1280)  # BCHW
+
+            # Return list to satisfy batch_processing=True
+            return [data_x], [data_y]
 
     def __len__(self):
         if self.batch:
@@ -265,7 +276,7 @@ class SeqZarrSource:
 
 
 @pipeline_def(
-    batch_size=16,
+    batch_size=4,
     num_threads=2,
     prefetch_queue_depth=2,
     py_num_workers=2,
@@ -279,12 +290,16 @@ def seqzarr_pipeline():
     Pipeline to load Zarr stores via a DALI External Source operator.
     """
     # Zarr source
-    source = SeqZarrSource(batch_size=16)
+    source = SeqZarrSource(batch_size=4)
 
     def index_generator(idx: int) -> np.ndarray:
         return np.array([idx])
 
-    indexes = dali.fn.external_source(source=index_generator, dtype=dali.types.INT64)
+    indexes = dali.fn.external_source(
+        source=index_generator,
+        dtype=dali.types.INT64,
+        device="gpu" if source.gpu else "cpu",
+    )
 
     # Read current batch
     data_x, data_y = dali.fn.python_function(
@@ -292,13 +307,14 @@ def seqzarr_pipeline():
         function=source,
         batch_processing=True,
         num_outputs=2,
-        device="cpu",
+        device="gpu" if source.gpu else "cpu",
     )
 
     # if self.device.type == "cuda":
     # Move tensors to GPU as external_source won't do that
-    data_x = data_x.gpu()
-    data_y = data_y.gpu()
+    if not source.gpu:
+        data_x = data_x.gpu()
+        data_y = data_y.gpu()
 
     # Set outputs
     return data_x, data_y
