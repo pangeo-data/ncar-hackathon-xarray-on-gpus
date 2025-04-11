@@ -5,7 +5,7 @@ channels:
 dependencies:
   - cupy~=13.3.0
   - dask-jobqueue~=0.9.0
-  - rapidsai-nightly::kvikio>=25.04.00a
+  - rapidsai::kvikio>=25.04.00
   - jupyterlab~=4.3.5
   - nvidia-dali-python~=1.45.0
   - nvtx~=0.2.11
