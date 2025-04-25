@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """
-This class is created for handling ERA-5 organized by year in Zarr format.
-This file contains two classes:
-1. ERA5Dataset: A custom dataset class to load multiple years of ERA5 data (1 zarr store per year -- but why?). (No PyTorch dependency)
-2. PyTorchERA5Dataset: A wrapper class to use the custom dataset in PyTorch DataLoader.
+This module defines classes to handle ERA5 datasets stored in Zarr format,
+including support for PyTorch DataLoader and NVIDIA DALI pipelines.
+
+Classes:
+- ERA5Dataset: Load multi-year ERA5 data from Zarr stores. (No PyTorch dependency)
+- PyTorchERA5Dataset: PyTorch-compatible wrapper for ERA5Dataset.
+- SeqZarrSource: NVIDIA DALI-compatible external source for ERA5 Zarr data.
+
+Example:
+    python ERA5TimeSeriesDataset.py
+    - Use the `--use-dali` flag to load data using DALI pipeline.
 """
 import os
 from contextlib import nullcontext
@@ -292,7 +299,6 @@ class SeqZarrSource:
     py_start_method="spawn",
 )
 
-
 def seqzarr_pipeline():
     """
     Pipeline to load Zarr stores via a DALI External Source operator.
@@ -300,6 +306,7 @@ def seqzarr_pipeline():
     # Zarr source
     source = SeqZarrSource(batch_size=4)
 
+    # generate indexes for the external source
     def index_generator(idx: int) -> np.ndarray:
         return np.array([idx])
 
@@ -309,7 +316,7 @@ def seqzarr_pipeline():
         device="gpu" if source.gpu else "cpu",
     )
 
-    # Read current batch
+    # Use DALI to read current batch from SeqZarrSource
     data_x, data_y = dali.fn.python_function(
         indexes,
         function=source,
@@ -319,15 +326,13 @@ def seqzarr_pipeline():
     )
 
     # if self.device.type == "cuda":
-    # Move tensors to GPU as external_source won't do that
+    # Move tensors to GPU as external_source won't do that automatically
     if not source.gpu:
         data_x = data_x.gpu()
         data_y = data_y.gpu()
 
     # Set outputs
     return data_x, data_y
-
-
 
 # -------------------------------------------------#
 # ----------------- Example usage -----------------#
@@ -368,12 +373,7 @@ if __name__ == "__main__":
         print(train_pytorch)
     else:
         # DALI pipeline loading
-        pipe = era5_dali_pipeline(
-            file_store=data_path,
-            input_vars=input_vars,
-            target_vars=target_vars,
-            batch_size=16
-        )
+        pipe = seqzarr_pipeline()
         pipe.build()
         arrays = pipe.run()
         print(arrays)
