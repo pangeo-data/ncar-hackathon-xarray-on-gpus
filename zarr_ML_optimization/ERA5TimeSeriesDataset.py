@@ -148,6 +148,16 @@ class PyTorchERA5Dataset(Dataset):
     
         return x_tensor, y_tensor
 
+    def __repr__(self):
+        x_tensor, y_tensor = self[0]
+        """Returns a summary of all datasets loaded."""
+        return (
+            f"PyTorchERA5Dataset(forecast_step={self.forecast_step}, "
+            f"use_synthetic={self.use_synthetic}, "
+            f"length={len(self)}, "
+            f"input_tensor_shape={tuple(x_tensor.shape)}, "
+            f"target_tensor_shape={tuple(y_tensor.shape)}, "
+        )
 
 class SeqZarrSource:
     """
@@ -321,32 +331,49 @@ def seqzarr_pipeline():
 
 # -------------------------------------------------#
 # ----------------- Example usage -----------------#
+# -------------------------------------------------#
 if __name__ == "__main__":
+    import argparse
 
-    ## Example usage of the ERA5TimeSeriesDataset class
+    # Set up simple argument parser
+    parser = argparse.ArgumentParser(description="ERA5 Data Loader...")
+    parser.add_argument(
+        "--use-dali",
+        action="store_true",
+        help="Use DALI pipeline instead of standard loading"
+    )
+    args = parser.parse_args()
+
+    # Hardcoded parameters (as in original code)
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
-    start_year = 1990
-    end_year = 2010
     input_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
+    target_vars = ['t2m', 'V500', 'U500', 'T500', 'Z500', 'Q500']
+    start_year = 2010
+    end_year = 2010
 
-    use_dali: bool = True
-    if not use_dali:
+    if not args.use_dali:
+        # Standard dataset loading
         train_dataset = ERA5Dataset(
-            data_path, start_year, end_year, input_vars=input_vars
+            data_path=data_path,
+            start_year=start_year,
+            end_year=end_year,
+            input_vars=input_vars,
+            target_vars=target_vars
         )
         print(train_dataset)
-        forecast_step = 1
-        ds_x, ds_y = train_dataset.fetch_timeseries(forecast_step=1)
-
-        print(ds_x)
-
-        # or use with data loader for pytorch as follows:
-        # pytorch_dataset = PyTorchERA5Dataset(train_dataset)
-        # data_loader = DataLoader(pytorch_dataset, batch_size=16, shuffle=True)
-        # etc....
-
-    else:  # use_dali is True
-        pipe = seqzarr_pipeline()
+        train_pytorch = PyTorchERA5Dataset(
+            train_dataset,
+            forecast_step=1
+        )
+        print(train_pytorch)
+    else:
+        # DALI pipeline loading
+        pipe = era5_dali_pipeline(
+            file_store=data_path,
+            input_vars=input_vars,
+            target_vars=target_vars,
+            batch_size=16
+        )
         pipe.build()
         arrays = pipe.run()
         print(arrays)
