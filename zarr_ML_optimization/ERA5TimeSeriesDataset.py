@@ -8,17 +8,15 @@ This file contains two classes:
 import os
 from contextlib import nullcontext
 
-import cupy as cp
 import numpy as np
-import nvidia.dali as dali
+import cupy as cp
 import torch
 import xarray as xr
 import zarr
+
+import nvidia.dali as dali
 from nvidia.dali.pipeline import pipeline_def
 from torch.utils.data import Dataset
-
-Tensor = torch.Tensor
-
 
 class ERA5Dataset:
     """
