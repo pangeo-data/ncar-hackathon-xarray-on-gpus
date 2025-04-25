@@ -17,9 +17,8 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import segmentation_models_pytorch as smp
-from ERA5TimeSeriesDataset import ERA5Dataset, PyTorchERA5Dataset, seqzarr_pipeline
 
-
+from era5_dataloader import ERA5Dataset, PyTorchERA5Dataset, seqzarr_pipeline
 
 def set_random_seeds(random_seed=0):
     """
@@ -63,20 +62,6 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
     return total_loss, loss_components
 
-def measure_gpu_throughput(model, inputs, batch_size):
-    inputs = inputs.to('cuda')
-    model = model.to('cuda')
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    with torch.no_grad():
-        for i in range(0, inputs.size(0), batch_size):
-            output = model(inputs[i:i + batch_size])
-    end.record()
-    torch.cuda.synchronize()
-    latency = start.elapsed_time(end)
-    throughput = inputs.size(0) * batch_size / latency
-    return throughput
 
 def main():
     num_epochs_default = 2
@@ -182,35 +167,39 @@ def main():
                 import sys
                 sys.exit("Can't find the evironment variables for local rank!")
     else:
-        # for running without torchrun
+        # for running without torchrun or mpirun (i.e. ./train_unet.py)
         LOCAL_RANK = 0
         WORLD_SIZE = 1
         WORLD_RANK = 0
+
 
     if WORLD_RANK == 0:
         print ('----------------------')
         print ('LOCAL_RANK  : ', LOCAL_RANK)
         print ('WORLD_SIZE  : ', WORLD_SIZE)
         print ('WORLD_RANK  : ', WORLD_RANK)
-        print("cuda device : ", torch.cuda.device_count())
-        print("pytorch version : ", torch.__version__)
-        print("nccl version : ", torch.cuda.nccl.version())
-        print("torch config : ", torch.__config__.show())
-        print(torch.__config__.parallel_info())
-        print("----------------------")    
+        print ("cuda device : ", torch.cuda.device_count())
+        print ("pytorch version : ", torch.__version__)
+        print ("nccl version : ", torch.cuda.nccl.version())
+        print ("torch config : ", torch.__config__.show())
+        print (torch.__config__.parallel_info())
+        print ("----------------------")    
 
     # ---------------------
+    # Initialize distributed training
     if distributed:
         torch.distributed.init_process_group(
             backend="nccl", rank=WORLD_RANK, world_size=WORLD_SIZE
         )
 
     # --------------------------
-    # Initialize the ERA5 Zarr dataset
+    # Read the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
         input_vars = ["combined"] * 71  # 6 input variables
         target_vars = ["combined"]  # Predict temperature only for now!!!!
+        input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
+        target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
     else:
         input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
         target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
@@ -240,7 +229,8 @@ def main():
             forecast_step=1,
             use_synthetic=use_synthetic
         )
-    
+
+        # Normalize the dataset using pre-computed mean and std files 
         mean_file = '/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc' # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
         std_file = '/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc'  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
         train_dataset.normalize(mean_file=mean_file, std_file=std_file)
@@ -282,7 +272,7 @@ def main():
             val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
         else:
             #val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
-            val_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
+            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
 
 
     if WORLD_RANK == 0:
