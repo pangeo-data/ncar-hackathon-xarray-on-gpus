@@ -3,10 +3,11 @@
 This module defines classes to handle ERA5 datasets stored in Zarr format,
 including support for PyTorch DataLoader and NVIDIA DALI pipelines.
 
-Classes:
 - ERA5Dataset: Load multi-year ERA5 data from Zarr stores. (No PyTorch dependency)
 - PyTorchERA5Dataset: PyTorch-compatible wrapper for ERA5Dataset.
+
 - SeqZarrSource: NVIDIA DALI-compatible external source for ERA5 Zarr data.
+- seqzarr_pipeline: DALI pipeline for loading Zarr data using SeqZarrSource.
 
 Example:
     python ERA5TimeSeriesDataset.py
@@ -23,7 +24,7 @@ import zarr
 
 import nvidia.dali as dali
 from nvidia.dali.pipeline import pipeline_def
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 
 class ERA5Dataset:
     """
@@ -371,6 +372,28 @@ if __name__ == "__main__":
             forecast_step=1
         )
         print(train_pytorch)
+
+        # Example of using PyTorch DataLoader
+        train_loader = DataLoader(train_pytorch, batch_size=16, pin_memory=True, shuffle=True)
+        print (f"Number of batches: {len(train_loader)}")
+        print (f"Batch size: {train_loader.batch_size}")
+
+        for i, batch in enumerate(train_loader):
+            inputs, targets = batch
+
+            print(f"Batch {i+1}: inputs shape = {inputs.shape}, targets shape = {targets.shape}")
+
+            sample_size_bytes = (
+                inputs.element_size() * inputs.nelement() +
+                targets.element_size() * targets.nelement()
+            )
+            sample_size_mb = sample_size_bytes / 1024 / 1024 / inputs.shape[0]  # per sample
+            print(f"Estimated sample size: {sample_size_mb:.2f} MB")
+
+            print(f"Total samples in dataset: {len(train_loader)}")
+
+            break
+
     else:
         # DALI pipeline loading
         pipe = seqzarr_pipeline()
