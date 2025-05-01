@@ -111,6 +111,11 @@ def main():
         action="store_true",
         help="Use DALI pipeline instead of regular Pytorch Dataloader.",
     )
+    parser.add_argument(
+        "--early-stop",
+        action="store_true",
+        help="Use early stopping for benchmarking purposes, (run 10 steps and stop).",
+    )
 
 
     argv = parser.parse_args()
@@ -120,6 +125,9 @@ def main():
     distributed = argv.distributed
     use_synthetic = argv.synth
     use_dali = argv.use_dali
+    early_stop = argv.early_stop
+
+    early_stop_index = 5
 
     if use_synthetic:
         print("Using synthetic data for training!")
@@ -347,6 +355,10 @@ def main():
         
         for i, batch in enumerate(train_loader):
             start_time = time.time()  # Start time for the step
+            
+            if early_stop and i >= early_stop_index:
+                early_stopped = True
+                break
 
             if len(batch) == 1:  # DALI
                 inputs = batch[0]["input"].squeeze(dim=(0, 2))
@@ -355,6 +367,7 @@ def main():
                 inputs, targets = batch
 
             if not argv.notraining:
+
                 # Move tensors to GPU if available
                 inputs = inputs.to(device)
                 targets = targets.to(device)
@@ -402,7 +415,15 @@ def main():
 
             print (f'Epoch [{epoch+1}/{num_epochs}], '
                 f'Average Training Loss: {avg_train_metrics["loss"]:.4f}, '
-                f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C')
+                f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C.')
+
+            if WORLD_RANK == 0:
+                train_time = (stop_train_time - epoch_start_time)
+                print (f'Epoch [{epoch+1}/{num_epochs}], '
+                    f'Training time this epoch: {train_time:.2f} seconds'
+                    f'Throughput this epoch: {train_time / len(train_loader):.2f} samples/sec.')
+            
+            
 
         # -----------------------------------------------------------------
         # Validation Loop
@@ -415,6 +436,10 @@ def main():
 
             #for i, (inputs, targets) in enumerate(val_loader):
             for i, batch in enumerate(val_loader):
+
+                if early_stop and i >= early_stop_index:
+                    early_stopped = True
+                    break
 
                 step_start_time = time.time()
                 if not argv.notraining:
@@ -457,45 +482,34 @@ def main():
 
             print (f'Epoch [{epoch+1}/{num_epochs}], '
                 f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
-                f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C')
+                f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C.')
 
         
-        # save snapshot of the model
-        if WORLD_RANK==0:
-            if not argv.notraining:
-                # Create directory for saved models
-                model_dir = "./saved_models"
-                os.makedirs(model_dir, exist_ok=True)
-                checkpoint_path = os.path.join(model_dir, f"model_epoch_{epoch+1}.pth")
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss': avg_train_metrics,
-                    'val_loss': avg_val_metrics,
-                }, checkpoint_path)
-
-                print(f"Saved model checkpoint to {checkpoint_path}!")
-
         if WORLD_RANK == 0:
             epoch_time = (time.time() - epoch_start_time)
             val_time = (stop_val_time - start_val_time)
             train_time = (stop_train_time - epoch_start_time) 
+            print ('-'*50)
             print(f'Epoch [{epoch+1}/{num_epochs}], Time this epoch: {epoch_time:.2f} seconds')
             print(f'Epoch [{epoch+1}/{num_epochs}], Training time this epoch: {train_time:.2f} seconds')
             print(f'Epoch [{epoch+1}/{num_epochs}], Validation time this epoch: {val_time:.2f} seconds')
             print(f'Epoch [{epoch+1}/{num_epochs}], Time per training step   : {train_time/ len(train_loader):.2f} seconds')
             print(f'Epoch [{epoch+1}/{num_epochs}], Time per validation step : {val_time/ len(val_loader):.2f} seconds')
-            
+
+
+
             if distributed:
-                #print ("len(val_loader.dataset) : ", len(val_loader.dataset))
-                total_samples = len(val_loader) * WORLD_SIZE
+                total_samples = (len(val_loader.dataset) + len(train_loader.dataset)) * batch_size * WORLD_SIZE
             else:
-                total_samples = len(val_loader)
+                total_samples = len(val_loader.dataset)+ len(train_loader.dataset) * batch_size
             
+            if early_stop:
+                total_samples = (early_stop_index+ early_stop_index)* batch_size
+                if distributed:
+                    total_samples = (early_stop_index+early_stop_index) * batch_size * WORLD_SIZE
 
             print(f"Samples processed this epoch: {total_samples}")
-            print(f"Average throughput this epoch: {total_samples / val_time:.2f} samples/sec.")
+            print(f"Average throughput this epoch: {total_samples / epoch_time:.2f} samples/sec.")
 
             #calculate sample size in MB
             # each sample is snap of input variable and target variables 
