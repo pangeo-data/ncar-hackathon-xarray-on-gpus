@@ -1,8 +1,13 @@
 # xarray-on-gpus
 
-Repository for the Xarray on GPUs team during the
+Repository for the hackathon project Xarray on GPUs team during the
 [NREL/NCAR/NOAA Open Hackathon](https://www.openhackathons.org/s/siteevent/a0CUP00000rwYYZ2A2/se000355)
 in Golden, Colorado from 18-27 February 2025.
+
+The goal of this project is to explore optimizing the performance of
+ML frameworks on GPUs. This includes reducing the data loading time
+to load data into GPU memory using zarr v3 and nvidia DALI. 
+
 
 # Getting started
 
@@ -50,3 +55,7 @@ dependencies to the exact versions in the `conda-lock.yml` file.
 
 See also https://conda.github.io/conda-lock/output/#unified-lockfile for more
 usage details.
+
+## Repo structure
+The repo is organized into the following folders:
+- ``: Contains the code for the end-to-end example of training a UNet model using the DALI library with Zarr data format, a bunch of command line arguments are added to the script to make it easier to use for benchmarking.
