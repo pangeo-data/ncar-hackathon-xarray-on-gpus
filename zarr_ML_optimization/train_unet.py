@@ -206,8 +206,8 @@ def main():
     if use_dali:
         input_vars = ["combined"] * 71  # 6 input variables
         target_vars = ["combined"]  # Predict temperature only for now!!!!
-        input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
-        target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
+        #input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
+        #target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
     else:
         input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
         target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
@@ -501,7 +501,7 @@ def main():
             if distributed:
                 total_samples = (len(val_loader.dataset) + len(train_loader.dataset)) * batch_size * WORLD_SIZE
             else:
-                total_samples = len(val_loader.dataset)+ len(train_loader.dataset) * batch_size
+                total_samples = (len(val_loader.dataset)+ len(train_loader.dataset)) * batch_size
             
             if early_stop:
                 total_samples = (early_stop_index+ early_stop_index)* batch_size
