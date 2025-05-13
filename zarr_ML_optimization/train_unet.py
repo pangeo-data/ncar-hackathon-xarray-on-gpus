@@ -26,7 +26,7 @@ def set_random_seeds(random_seed=0):
     """
     torch.manual_seed(random_seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
     np.random.seed(random_seed)
 
 def custom_loss(predictions, targets, lambda_std=0.1):
@@ -202,7 +202,7 @@ def main():
 
     # --------------------------
     # Read the ERA5 Zarr dataset
-    data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
+    data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
         input_vars = ["combined"] * 71  # 6 input variables
         target_vars = ["combined"]  # Predict temperature only for now!!!!
@@ -247,9 +247,9 @@ def main():
 
         if distributed:
             train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16, sampler=train_sampler, persistent_workers=True)  # Use prefetching to speed up data loading
         else:
-            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16,persistent_workers=True )  # Use prefetching to speed up data loading
 
     # --------------------------
     # 2) validation dataset
@@ -277,10 +277,10 @@ def main():
         print ("distributed:", distributed)
         if distributed:
             val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
-            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, sampler = val_sampler)  
+            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16, sampler = val_sampler, persistent_workers=True)  
         else:
-            #val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)
-            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, shuffle=True)  
+            #val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True)
+            val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16, persistent_workers=True)
 
 
     if WORLD_RANK == 0:
@@ -294,7 +294,7 @@ def main():
 
     # --------------------------
     # Define the U-Net model using segmentation_models_pytorch
-    ENCODER = 'resnet34'  # Encoder backbone
+    ENCODER = 'resnet18'  # Encoder backbone
     ENCODER_WEIGHTS = 'imagenet'  # Pretrained weights
     #ENCODER_WEIGHTS = None  # No pretrained weights
     CLASSES = input_vars  # Number of output channels (same as input variables)
