@@ -71,6 +71,86 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
     return total_loss, loss_components
 
+def init_process_group(distributed: bool, backend:str ="nccl") -> Tuple[int, int, int]:
+    """
+    Initialize the process group for distributed training.
+
+    Args:
+        distributed (bool): Whether to use distributed training.
+        backend (str): Backend for distributed training. Default is "nccl".
+    Returns:
+        LOCAL_RANK (int): Local rank of the process.
+        WORLD_SIZE (int): Total number of processes.
+        WORLD_RANK (int): Rank of the process in the world.
+    """
+    if distributed:
+        try:
+            # support for different flavors of MPI
+            from mpi4py import MPI
+
+            comm = MPI.COMM_WORLD
+            shmem_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
+
+            LOCAL_RANK = shmem_comm.Get_rank()
+            WORLD_SIZE = comm.Get_size()
+            WORLD_RANK = comm.Get_rank()
+
+            os.environ["MASTER_ADDR"] = comm.bcast(
+                socket.gethostbyname(socket.gethostname()), root=0
+            )
+            os.environ["MASTER_PORT"] = "1234"
+
+            if "MASTER_ADDR" not in os.environ:
+                os.environ["MASTER_ADDR"] = comm.bcast(
+                    socket.gethostbyname(socket.gethostname()), root=0
+                )
+            if "MASTER_PORT" not in os.environ:
+                os.environ["MASTER_PORT"] = str(np.random.randint(1000, 8000))
+        except:
+            if "LOCAL_RANK" in os.environ:
+                # Environment variables set by torch.distributed.launch or torchrun
+                LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+                WORLD_RANK = int(os.environ["RANK"])
+            elif "OMPI_COMM_WORLD_LOCAL_RANK" in os.environ:
+                # Environment variables set by mpirun
+                LOCAL_RANK = int(os.environ["OMPI_COMM_WORLD_LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["OMPI_COMM_WORLD_SIZE"])
+                WORLD_RANK = int(os.environ["OMPI_COMM_WORLD_RANK"])
+            elif "PMI_RANK" in os.environ:
+                # Environment variables set by cray-mpich
+                LOCAL_RANK = int(os.environ["PMI_LOCAL_RANK"])
+                WORLD_SIZE = int(os.environ["PMI_SIZE"])
+                WORLD_RANK = int(os.environ["PMI_RANK"])
+            else:
+                raise RuntimeError(
+                    "Can't find the environment variables for local rank!"
+                )
+    else:
+        # for running without torchrun or mpirun (i.e. ./train_unet.py)
+        LOCAL_RANK = 0
+        WORLD_SIZE = 1
+        WORLD_RANK = 0
+
+    if WORLD_RANK == 0:
+        print("----------------------")
+        print("LOCAL_RANK  : ", LOCAL_RANK)
+        print("WORLD_SIZE  : ", WORLD_SIZE)
+        print("WORLD_RANK  : ", WORLD_RANK)
+        print("cuda device : ", torch.cuda.device_count())
+        print("pytorch version : ", torch.__version__)
+        print("nccl version : ", torch.cuda.nccl.version())
+        print("torch config : ", torch.__config__.show())
+        print(torch.__config__.parallel_info())
+        print("----------------------")
+
+    # ---------------------
+    # Initialize distributed training
+    if distributed:
+        torch.distributed.init_process_group(
+            backend=backend, rank=WORLD_RANK, world_size=WORLD_SIZE
+        )
+    return LOCAL_RANK, WORLD_SIZE, WORLD_RANK
 
 def main():
     num_epochs_default = 2
@@ -137,83 +217,20 @@ def main():
 
     early_stop_index = 5
 
+    #---------------------------
     if use_synthetic:
         print("Using synthetic data for training!")
 
+    #---------------------------
     # Set random seeds for reproducibility!
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
 
     # --------------------------
-    # Distributed setup
-    if distributed:
-        try:
-            # support for different flavors of MPI
-            from mpi4py import MPI
-
-            comm = MPI.COMM_WORLD
-            shmem_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
-
-            LOCAL_RANK = shmem_comm.Get_rank()
-            WORLD_SIZE = comm.Get_size()
-            WORLD_RANK = comm.Get_rank()
-
-            os.environ["MASTER_ADDR"] = comm.bcast(
-                socket.gethostbyname(socket.gethostname()), root=0
-            )
-            os.environ["MASTER_PORT"] = "1234"
-
-            if "MASTER_ADDR" not in os.environ:
-                os.environ["MASTER_ADDR"] = comm.bcast(
-                    socket.gethostbyname(socket.gethostname()), root=0
-                )
-            if "MASTER_PORT" not in os.environ:
-                os.environ["MASTER_PORT"] = str(np.random.randint(1000, 8000))
-        except:
-            if "LOCAL_RANK" in os.environ:
-                # Environment variables set by torch.distributed.launch or torchrun
-                LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-                WORLD_RANK = int(os.environ["RANK"])
-            elif "OMPI_COMM_WORLD_LOCAL_RANK" in os.environ:
-                # Environment variables set by mpirun
-                LOCAL_RANK = int(os.environ["OMPI_COMM_WORLD_LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["OMPI_COMM_WORLD_SIZE"])
-                WORLD_RANK = int(os.environ["OMPI_COMM_WORLD_RANK"])
-            elif "PMI_RANK" in os.environ:
-                # Environment variables set by cray-mpich
-                LOCAL_RANK = int(os.environ["PMI_LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["PMI_SIZE"])
-                WORLD_RANK = int(os.environ["PMI_RANK"])
-            else:
-                import sys
-
-                sys.exit("Can't find the evironment variables for local rank!")
-    else:
-        # for running without torchrun or mpirun (i.e. ./train_unet.py)
-        LOCAL_RANK = 0
-        WORLD_SIZE = 1
-        WORLD_RANK = 0
-
-    if WORLD_RANK == 0:
-        print("----------------------")
-        print("LOCAL_RANK  : ", LOCAL_RANK)
-        print("WORLD_SIZE  : ", WORLD_SIZE)
-        print("WORLD_RANK  : ", WORLD_RANK)
-        print("cuda device : ", torch.cuda.device_count())
-        print("pytorch version : ", torch.__version__)
-        print("nccl version : ", torch.cuda.nccl.version())
-        print("torch config : ", torch.__config__.show())
-        print(torch.__config__.parallel_info())
-        print("----------------------")
-
-    # ---------------------
-    # Initialize distributed training
-    if distributed:
-        torch.distributed.init_process_group(
-            backend="nccl", rank=WORLD_RANK, world_size=WORLD_SIZE
-        )
-
+    # Initialize the process group for single or multi-GPU training
+    LOCAL_RANK, WORLD_RANK, WORLD_SIZE = init_process_group(
+        distributed=distributed, backend="nccl"
+    )
     # --------------------------
     # Read the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
