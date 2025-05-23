@@ -27,7 +27,6 @@ from era5_dataloader import (
     SeqZarrSource,
 )
 
-
 # --- Logger Setup ---
 logger = logging.getLogger(__name__) # Get a logger specific to this module
 
@@ -248,7 +247,7 @@ def main():
 
     # --------------------------
     # Read the ERA5 Zarr dataset
-    data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
+    data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
         input_vars = ["combined"] * 6  # 6 input variables
         target_vars = [
@@ -415,8 +414,7 @@ def main():
             output_device=LOCAL_RANK,
             find_unused_parameters=True,
         )
-        model = ddp_model
-        model = model.to(device)
+        model = ddp_model.to(device)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
@@ -462,6 +460,7 @@ def main():
             else:  # non-DALI
                 inputs, targets = batch
 
+
             if not argv.notraining:  # training
 
                 # Move tensors to GPU if available
@@ -504,7 +503,7 @@ def main():
                 if WORLD_RANK == 0:
                     print(
                         f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
-                        f"Time per training step: {step_time:.4f} sec."
+                        f"Time per training step: {step_train_time:.4f} sec."
                     )
 
         # End of training loop for this epoch
@@ -574,7 +573,7 @@ def main():
                 else:
                     # Skip validation for benchmarking purposes
 
-                    step_val_time = time.time() - step_start_time
+                    step_val_time = time.time() - step_val_start_time
                     if WORLD_RANK == 0:
                         print(
                             f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
@@ -626,23 +625,17 @@ def main():
                 f"Epoch [{epoch+1}/{num_epochs}], Time per validation step : {val_time/ len(val_loader):.2f} seconds"
             )
 
-            if distributed:
-                total_samples = (
-                    (len(val_loader.dataset) + len(train_loader.dataset))
-                    * batch_size
-                    * WORLD_SIZE
-                )
+            if early_stop > 0:
+                steps = early_stop
             else:
-                total_samples = (
-                    len(val_loader.dataset) + len(train_loader.dataset)
-                ) * batch_size
+                steps = len(train_loader.dataset)+ len(val_loader.dataset)
 
-            if early_stop >0 : 
-                total_samples = (early_stop + early_stop) * batch_size
-                if distributed:
-                    total_samples = (
-                        (early_stop + early_stop) * batch_size * WORLD_SIZE
-                    )
+            total_samples = steps * batch_size* WORLD_SIZE
+
+            print ("WORLD_SIZE:", WORLD_SIZE)
+
+            if distributed:
+                total_samples = steps * batch_size * WORLD_SIZE
 
             print(f"Samples processed this epoch: {total_samples}")
             print(
