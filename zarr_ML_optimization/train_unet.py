@@ -18,7 +18,7 @@ from torch.utils.data.distributed import DistributedSampler
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import segmentation_models_pytorch as smp
 
-from era5_dataloader import ERA5Dataset, PyTorchERA5Dataset, seqzarr_pipeline
+from era5_dataloader import ERA5Dataset, PyTorchERA5Dataset, build_seqzarr_pipeline, SeqZarrSource
 
 def set_random_seeds(random_seed=0):
     """
@@ -131,6 +131,7 @@ def main():
 
     if use_synthetic:
         print("Using synthetic data for training!")
+        
     # Set random seeds for reproducibility!
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
@@ -204,7 +205,7 @@ def main():
     # Read the ERA5 Zarr dataset
     data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
-        input_vars = ["combined"] * 71  # 6 input variables
+        input_vars = ["combined"] * 6  # 6 input variables
         target_vars = ["combined"]  # Predict temperature only for now!!!!
         #input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
         #target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
@@ -221,7 +222,14 @@ def main():
     # 1) Training dataset
 
     if use_dali:
-        pipe_train = seqzarr_pipeline()
+        #pipe_train = seqzarr_pipeline()
+        #train_loader = DALIGenericIterator(
+        #    pipelines=pipe_train, output_map=["input", "target"]
+        #)
+        source = SeqZarrSource(batch_size=16)
+        print ("...shape of this source:", source.__len__())
+        pipe_train = build_seqzarr_pipeline(source=source)
+        pipe_train.build()
         train_loader = DALIGenericIterator(
             pipelines=pipe_train, output_map=["input", "target"]
         )
@@ -247,15 +255,18 @@ def main():
 
         if distributed:
             train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16, sampler=train_sampler, persistent_workers=True)  # Use prefetching to speed up data loading
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=1, sampler=train_sampler, persistent_workers=True)  # Use prefetching to speed up data loading
         else:
-            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=16,persistent_workers=True )  # Use prefetching to speed up data loading
+            train_loader = DataLoader(train_pytorch, batch_size=batch_size, pin_memory=True, num_workers=1,persistent_workers=True )  # Use prefetching to speed up data loading
 
     # --------------------------
     # 2) validation dataset
     # --------------------------
     if use_dali:
-        pipe_val = seqzarr_pipeline()
+        source = SeqZarrSource(batch_size=16)
+        print ("...shape of this source:", source.__len__())
+        pipe_val = build_seqzarr_pipeline(source=source)
+        pipe_val.build()
         val_loader = DALIGenericIterator(
             pipelines=pipe_val, output_map=["input", "target"]
         )
@@ -352,12 +363,15 @@ def main():
         model.train()
         running_loss = 0.0
         epoch_train_losses = []  # Track losses for this epoch
-        
+
         for i, batch in enumerate(train_loader):
+
             start_time = time.time()  # Start time for the step
             
             if early_stop and i >= early_stop_index:
                 early_stopped = True
+                if use_dali:
+                    pipe_train.reset()
                 break
 
             if len(batch) == 1:  # DALI
@@ -405,7 +419,9 @@ def main():
                     f"Time per training step: {step_time:.4f} sec.")
     
         stop_train_time = time.time()
-
+        stop = False
+        if stop== True:
+            break
         if not argv.notraining:
         # Calculate average training metrics for this epoch for training cases!
             avg_train_metrics = {
@@ -437,8 +453,9 @@ def main():
             #for i, (inputs, targets) in enumerate(val_loader):
             for i, batch in enumerate(val_loader):
 
-                if early_stop and i >= early_stop_index:
-                    early_stopped = True
+                if early_stop:
+                    if use_dali:
+                        val_loader.reset()
                     break
 
                 step_start_time = time.time()
