@@ -25,6 +25,8 @@ import zarr
 import nvidia.dali as dali
 from nvidia.dali.pipeline import pipeline_def
 from torch.utils.data import Dataset, DataLoader
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
+import nvidia.dali.fn as fn
 
 class ERA5Dataset:
     """
@@ -61,7 +63,7 @@ class ERA5Dataset:
         """Loads all zarr files into a dictionary keyed by year."""
         zarr_paths = []
         for year in range(self.start_year, self.end_year + 1):
-            zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_staged.zarr")
+            zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_rechunked.zarr")
             if os.path.exists(zarr_path):
                 zarr_paths.append(zarr_path)
             else:
@@ -177,8 +179,10 @@ class SeqZarrSource:
 
     def __init__(
         self,
-        file_store: str = "/glade/derecho/scratch/katelynw/era5/rechunked_stacked_test.zarr",
+        file_store: str = "/glade/derecho/scratch/negins/era5/rechunked_stacked_uncompressed_test.zarr",
         variables: list[str] = ["combined"],
+        start_year: int = 2010,
+        end_year: int = 2010,
         num_steps: int = 2,
         batch_size: int = 16,
         shuffle: bool = True,
@@ -237,16 +241,20 @@ class SeqZarrSource:
         else:
             self._call = self._sample_call
 
+        print (self.batch_mapping.shape)
+
     def __call__(self, index: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         with zarr.config.enable_gpu() if self.gpu else nullcontext():
             # Open Zarr dataset
             if self.zarr_dataset is None:
                 self.zarr_dataset: zarr.Group = zarr.open(self.file_store, mode="r")
 
-            index: int = index[
-                0
-            ]  # turn [np.ndarray()] with one element to np.ndarray()
-            if index >= self.batch_mapping.shape[0]:
+            #index: int = index[
+            #    0
+            #]  # turn [np.ndarray()] with one element to np.ndarray()
+            index = int(index[0])
+
+            if index > self.batch_mapping.shape[0]:
                 raise StopIteration()
 
             # Get batch indices
@@ -286,54 +294,88 @@ class SeqZarrSource:
 
     def __len__(self):
         if self.batch:
-            return self.batch_mapping.shape[0] * self.batch_size
+            print(f"Batch mapping shape: {self.batch_mapping.shape}")
+            return len(self.batch_mapping)
         else:
             return len(self.indices)
 
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(\n"
+            f"  file_store={self.file_store!r},\n"
+            f"  variables={self.variables},\n"
+            f"  num_steps={self.num_steps},\n"
+            f"  batch_size={self.batch_size},\n"
+            f"  shuffle={self.shuffle},\n"
+            f"  batch={self.batch},\n"
+            f"  gpu={self.gpu},\n"
+            f"  first_dim={self.first_dim},\n"
+            f"  total_samples={len(self.indices)},\n"
+            f"  num_batches={self.num_batches}\n"
+            f")"
+        )
 
-@pipeline_def(
-    batch_size=4,
-    num_threads=2,
-    prefetch_queue_depth=2,
-    py_num_workers=2,
-    device_id=0,
-    py_start_method="spawn",
-)
 
-def seqzarr_pipeline():
+def build_seqzarr_pipeline(source: SeqZarrSource, batch_size: int = 16):
     """
-    Pipeline to load Zarr stores via a DALI External Source operator.
+    Build the DALI pipeline for loading Zarr data.
     """
-    # Zarr source
-    source = SeqZarrSource(batch_size=4)
-
-    # generate indexes for the external source
-    def index_generator(idx: int) -> np.ndarray:
-        return np.array([idx])
-
-    indexes = dali.fn.external_source(
-        source=index_generator,
-        dtype=dali.types.INT64,
-        device="gpu" if source.gpu else "cpu",
+    @pipeline_def(
+        batch_size=4,
+        num_threads=2,
+        prefetch_queue_depth=2,
+        py_num_workers=2,
+        device_id=0,
+        py_start_method="spawn",
     )
 
-    # Use DALI to read current batch from SeqZarrSource
-    data_x, data_y = dali.fn.python_function(
-        indexes,
-        function=source,
-        batch_processing=True,
-        num_outputs=2,
-        device="gpu" if source.gpu else "cpu",
-    )
+    def seqzarr_pipeline():
+        """
+        Pipeline to load Zarr stores via a DALI External Source operator.
+        """
+        # Zarr source
+        source = SeqZarrSource(batch_size=16)
+        print (source)
+        print ("shape of this source:", source.__len__())
 
-    # if self.device.type == "cuda":
-    # Move tensors to GPU as external_source won't do that automatically
-    if not source.gpu:
-        data_x = data_x.gpu()
+        # generate indexes for the external source
+        def index_generator(idx: int) -> np.ndarray:
+            return np.array([idx])
+
+        indexes = dali.fn.external_source(
+            source=index_generator,
+            dtype=dali.types.INT64,
+            device="gpu" if source.gpu else "cpu",
+            batch=True,
+        )
+
+        print (indexes)
+
+        # Use DALI to read current batch from SeqZarrSource
+        data_x, data_y = dali.fn.python_function(
+            indexes,
+            function=source,
+            batch_processing=True,
+            num_outputs=2,
+            device="gpu" if source.gpu else "cpu",
+        )
+
+        #data_x = data_x.squeeze(0).squeeze(1)
+        #data_y = data_y.squeeze(0).squeeze(1)
+
+        data_x = fn.reshape(data_x, shape=[16,6,640,1280])
+        data_y = fn.reshape(data_y, shape=[16,6,640,1280])
+
+        # if self.device.type == "cuda":
+        # Move tensors to GPU as external_source won't do that automatically
+        if not source.gpu:
+            data_x = data_x.gpu()
         data_y = data_y.gpu()
+    
 
-    # Set outputs
-    return data_x, data_y
+        # Set outputs
+        return data_x, data_y
+    return seqzarr_pipeline()
 
 # -------------------------------------------------#
 # ----------------- Example usage -----------------#
@@ -396,7 +438,35 @@ if __name__ == "__main__":
 
     else:
         # DALI pipeline loading
-        pipe = seqzarr_pipeline()
+        source = SeqZarrSource(batch_size=16)
+        print ("...shape of this source:", source.__len__())
+        pipe = build_seqzarr_pipeline(source=source)
         pipe.build()
-        arrays = pipe.run()
-        print(arrays)
+        
+
+
+        #pipe = seqzarr_pipeline()
+        train_loader = DALIGenericIterator(
+            pipelines=pipe,
+            output_map=["input", "target"],
+            auto_reset=True,
+            last_batch_padded=False,
+            #fill_last_batch=False,
+            #size = -1,
+        )
+        print (f"Number of batches: {len(train_loader)}")
+        try: 
+            for i, data in enumerate(train_loader):
+                if i<19:
+                    inputs, targets = data[0]["input"].squeeze(0), data[0]["target"].squeeze(0)
+                    print(f"Batch {i+1}: inputs shape = {inputs.shape}, targets shape = {targets.shape}")
+                else:
+                    break
+        finally:
+            train_loader.reset()
+            del pipe
+        print (f"Total samples in dataset: {len(train_loader)}")
+        #pipe.build()
+        #arrays = pipe.run()
+        #print(arrays)
+        #print (len(arrays))
