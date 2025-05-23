@@ -74,14 +74,6 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 def init_process_group(distributed: bool, backend:str ="nccl") -> Tuple[int, int, int]:
     """
     Initialize the process group for distributed training.
-
-    Args:
-        distributed (bool): Whether to use distributed training.
-        backend (str): Backend for distributed training. Default is "nccl".
-    Returns:
-        LOCAL_RANK (int): Local rank of the process.
-        WORLD_SIZE (int): Total number of processes.
-        WORLD_RANK (int): Rank of the process in the world.
     """
     if distributed:
         try:
@@ -236,7 +228,7 @@ def main():
     data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
         input_vars = ["combined"] * 6  # 6 input variables
-        target_vars = ["combined"]  # Predict temperature only for now!!!!
+        target_vars = ["combined"] * 6  # Stacked input variables into one "combined" variable
         # input_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # 6 input variables
         # target_vars = ['t2m','V500', 'U500', 'T500', 'Z500', 'Q500'] # Predict all 6 variables
     else:
@@ -255,7 +247,7 @@ def main():
             "T500",
             "Z500",
             "Q500",
-        ]  # Predict all 6 variables
+        ]
 
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
@@ -394,12 +386,6 @@ def main():
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device("cuda:{}".format(LOCAL_RANK))
         print("device:", device, "world_rank:", WORLD_RANK, "local_rank:", LOCAL_RANK)
-        model = model.to(LOCAL_RANK)
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device)
-
-    if distributed:
         ddp_model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[LOCAL_RANK],
@@ -407,8 +393,12 @@ def main():
             find_unused_parameters=True,
         )
         model = ddp_model
+        model = model.to(device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
 
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True    #cuDNN auto-tuner to find the optimal set of algorithms for the hardware
 
     # --------------------------
     # Define the loss function and optimizer
