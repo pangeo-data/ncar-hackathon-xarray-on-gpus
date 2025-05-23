@@ -71,7 +71,7 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
     return total_loss, loss_components
 
-def init_process_group(distributed: bool, backend:str ="nccl") -> Tuple[int, int, int]:
+def init_process_group(distributed: bool, backend:str ="nccl") -> tuple[int, int, int]:
     """
     Initialize the process group for distributed training.
     """
@@ -143,6 +143,8 @@ def init_process_group(distributed: bool, backend:str ="nccl") -> Tuple[int, int
             backend=backend, rank=WORLD_RANK, world_size=WORLD_SIZE
         )
     return LOCAL_RANK, WORLD_SIZE, WORLD_RANK
+
+
 
 def main():
     num_epochs_default = 2
@@ -386,11 +388,10 @@ def main():
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device("cuda:{}".format(LOCAL_RANK))
         print("device:", device, "world_rank:", WORLD_RANK, "local_rank:", LOCAL_RANK)
+        model = model.to(device)
+        # Wrap the model with DDP
         ddp_model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[LOCAL_RANK],
-            output_device=LOCAL_RANK,
-            find_unused_parameters=True,
+            model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK, find_unused_parameters=True
         )
         model = ddp_model
         model = model.to(device)
@@ -453,7 +454,6 @@ def main():
                 outputs = model(inputs)
 
                 # Compute loss
-                # Calculate loss using custom loss function
                 loss, loss_components = custom_loss(outputs, targets)
 
                 # Backprop
@@ -466,26 +466,29 @@ def main():
                 epoch_train_losses.append(loss_components)
                 running_loss += loss.item()
 
-                step_time = (
+                step_train_time = (
                     time.time() - start_time
                 )  # Compute elapsed time in milliseconds
 
-                print(
-                    f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
-                    f"Loss: {loss.item():.4f},"
-                    f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f}",
-                    f"Time per training step: {step_time:.4f} sec.",
-                )
+                if LOCAL_RANK == 0:
+                    print(
+                        f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
+                        f"Loss: {loss.item():.4f},"
+                        f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f}",
+                        f"Time per training step: {step_train_time:.4f} sec.",
+                    )
 
-            else:
-                # Skip training for benchmarking purposes
+            else: # Skip training for benchmarking purposes
                 # Time should come out as 0.0
-                step_time = time.time() - start_time
+                torch.cuda.synchronize()
+                step_train_time = time.time() - start_time
                 print(
                     f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
                     f"Time per training step: {step_time:.4f} sec."
                 )
+        
 
+        # End of training loop for this epoch
         stop_train_time = time.time()
         stop = False
         if stop == True:
@@ -504,14 +507,8 @@ def main():
                 f'Average Training Loss: {avg_train_metrics["loss"]:.4f}, '
                 f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C.'
             )
-
-            if WORLD_RANK == 0:
-                train_time = stop_train_time - epoch_start_time
-                print(
-                    f"Epoch [{epoch+1}/{num_epochs}], "
-                    f"Training time this epoch: {train_time:.2f} seconds"
-                    f"Throughput this epoch: {train_time / len(train_loader):.2f} samples/sec."
-                )
+        if use_dali:
+            train_loader.reset()
 
         # -----------------------------------------------------------------
         # Validation Loop
@@ -524,13 +521,13 @@ def main():
 
             # for i, (inputs, targets) in enumerate(val_loader):
             for i, batch in enumerate(val_loader):
+                step_val_start_time = time.time()  # Start time for the step
 
                 if early_stop:
                     if use_dali:
                         val_loader.reset()
                     break
 
-                step_start_time = time.time()
                 if not argv.notraining:
                     if len(batch) == 1:  # DALI
                         inputs = batch[0]["input"].squeeze(dim=(0, 2))
@@ -544,7 +541,7 @@ def main():
                     epoch_val_losses.append(loss_components)
                     torch.cuda.synchronize()
                     step_val_time = (
-                        time.time() - step_start_time
+                        time.time() - step_val_start_time
                     )  # Compute elapsed time in milliseconds
                     print(
                         f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
@@ -581,6 +578,10 @@ def main():
                 f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
                 f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C.'
             )
+
+            if use_dali:
+                val_loader.reset()
+
 
         if WORLD_RANK == 0:
             epoch_time = time.time() - epoch_start_time
