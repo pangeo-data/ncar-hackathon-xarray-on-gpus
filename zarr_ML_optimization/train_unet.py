@@ -27,28 +27,10 @@ from era5_dataloader import (
     SeqZarrSource,
 )
 
+from trainer_utils import setup_logging, set_random_seeds, init_process_group
+
 # --- Logger Setup ---
-logger = logging.getLogger(__name__) # Get a logger specific to this module
-
-def setup_logging(world_rank: int, level: int = logging.INFO) -> None:
-    """Sets up basic logging. Logs only from rank 0."""
-    if world_rank == 0:
-        logging.basicConfig( # Configure the root logger
-            level=level,
-            format="%(asctime)s [%(levelname)s] : %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    else:
-        logging.basicConfig(level=logging.CRITICAL + 1)
-
-def set_random_seeds(random_seed=0):
-    """
-    Set random seeds for reproducibility.
-    """
-    torch.manual_seed(random_seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
-    np.random.seed(random_seed)
+logger = logging.getLogger(__name__)
 
 
 def custom_loss(predictions, targets, lambda_std=0.1):
@@ -86,73 +68,6 @@ def custom_loss(predictions, targets, lambda_std=0.1):
 
     return total_loss, loss_components
 
-
-def init_process_group(
-    distributed: bool, backend: str = "nccl"
-) -> tuple[int, int, int]:
-    """
-    Initialize the process group for distributed training.
-    """
-    if distributed:
-        try:
-            # support for different flavors of MPI
-            from mpi4py import MPI
-
-            comm = MPI.COMM_WORLD
-            shmem_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
-
-            LOCAL_RANK = shmem_comm.Get_rank()
-            WORLD_SIZE = comm.Get_size()
-            WORLD_RANK = comm.Get_rank()
-
-            os.environ["MASTER_ADDR"] = comm.bcast(
-                socket.gethostbyname(socket.gethostname()), root=0
-            )
-            os.environ["MASTER_PORT"] = "1234"
-
-            if "MASTER_ADDR" not in os.environ:
-                os.environ["MASTER_ADDR"] = comm.bcast(
-                    socket.gethostbyname(socket.gethostname()), root=0
-                )
-            if "MASTER_PORT" not in os.environ:
-                os.environ["MASTER_PORT"] = str(np.random.randint(1000, 8000))
-        except:
-            if "LOCAL_RANK" in os.environ:
-                # Environment variables set by torch.distributed.launch or torchrun
-                LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-                WORLD_RANK = int(os.environ["RANK"])
-            elif "OMPI_COMM_WORLD_LOCAL_RANK" in os.environ:
-                # Environment variables set by mpirun
-                LOCAL_RANK = int(os.environ["OMPI_COMM_WORLD_LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["OMPI_COMM_WORLD_SIZE"])
-                WORLD_RANK = int(os.environ["OMPI_COMM_WORLD_RANK"])
-            elif "PMI_RANK" in os.environ:
-                # Environment variables set by cray-mpich
-                LOCAL_RANK = int(os.environ["PMI_LOCAL_RANK"])
-                WORLD_SIZE = int(os.environ["PMI_SIZE"])
-                WORLD_RANK = int(os.environ["PMI_RANK"])
-            else:
-                raise RuntimeError(
-                    "Can't find the environment variables for local rank!"
-                )
-    else:
-        # for running without torchrun or mpirun (i.e. ./train_unet.py)
-        LOCAL_RANK = 0
-        WORLD_SIZE = 1
-        WORLD_RANK = 0
-
-    if WORLD_RANK == 0:
-        print("----------------------")
-        print("LOCAL_RANK  : ", LOCAL_RANK)
-        print("WORLD_SIZE  : ", WORLD_SIZE)
-        print("WORLD_RANK  : ", WORLD_RANK)
-        print("cuda device : ", torch.cuda.device_count())
-        print("pytorch version : ", torch.__version__)
-        print("nccl version : ", torch.cuda.nccl.version())
-        print("torch config : ", torch.__config__.show())
-        print(torch.__config__.parallel_info())
-        print("----------------------")
 
     # ---------------------
     # Initialize distributed training
@@ -237,13 +152,13 @@ def main():
     # Initialize the process group for single or multi-GPU training
     LOCAL_RANK, WORLD_SIZE, WORLD_RANK = init_process_group(
         distributed=distributed, backend="nccl"
-    )
+    ) 
 
     setup_logging(world_rank=WORLD_RANK)
-    logger.info(f"Start training script with args: {argv}")
-    logger.info(f"Using DALI: {use_dali}")
-    logger.info(f"Using synthetic data: {use_synthetic}")
-    logger.info(f"Distributed training: {distributed}")
+    logger.info("Strat training script!")
+    logger.info(f"Distributed     : {distributed}")
+    logger.info(f"Using DALI      : {use_dali}")
+    logger.info(f"Synthetic data  : {use_synthetic}")
 
     # --------------------------
     # Read the ERA5 Zarr dataset
@@ -307,29 +222,29 @@ def main():
         )
 
         # Normalize the dataset using pre-computed mean and std files
-        mean_file = "/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc"  # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-        std_file = "/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc"  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
-        train_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        train_dataset.normalize()
         train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
 
         if distributed:
             train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-            train_loader = DataLoader(
-                train_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=16,
-                sampler=train_sampler,
-                persistent_workers=True,
-            )  # Use prefetching to speed up data loading
-        else:
-            train_loader = DataLoader(
-                train_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=16,
-                persistent_workers=True,
-            )  # Use prefetching to speed up data loading
+        else: 
+            train_sampler = None
+
+        requested_workers = 16
+        num_workers = min(
+            requested_workers, 
+            os.cpu_count() // 2,  # Safe default
+            torch.cuda.device_count() * 4  # GPU-aware
+        )
+        logger.info(f"Using {num_workers} workers for DataLoader.")
+        train_loader = DataLoader(
+            train_pytorch,
+            batch_size=batch_size,
+            pin_memory=True,
+            num_workers=num_workers,
+            sampler=train_sampler,
+            persistent_workers=True,
+        )
 
     # --------------------------
     # 2) validation dataset
@@ -352,28 +267,22 @@ def main():
             input_vars=input_vars,
             target_vars=target_vars,
         )
-        val_dataset.normalize(mean_file=mean_file, std_file=std_file)
+        val_dataset.normalize())
         val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
 
         if distributed:
             val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
-            val_loader = DataLoader(
-                val_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=16,
-                sampler=val_sampler,
-                persistent_workers=True,
-            )
         else:
-            # val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True)
-            val_loader = DataLoader(
-                val_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=16,
-                persistent_workers=True,
-            )
+            val_sampler = None
+            
+        val_loader = DataLoader(
+            val_pytorch,
+            batch_size=batch_size,
+            pin_memory=True,
+            num_workers=num_workers,
+            sampler=val_sampler,
+            persistent_workers=True,
+        )
 
     
     if not use_dali:
