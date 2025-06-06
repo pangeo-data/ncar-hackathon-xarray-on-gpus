@@ -1,3 +1,16 @@
+"""
+Zarr v3 I/O Benchmark: CPU vs GPU Read Performance
+
+This script benchmarks the I/O performance of writing and reading a synthetic
+Zarr v3 dataset using CPU and GPU. It demonstrates how to:
+
+- Create a 4D array in Zarr v3 using a specified compression codec (CPU or GPU).
+- Read the dataset using either CPU-based or GPU-accelerated access.
+- Annotate profiling regions using NVTX for use with NVIDIA Nsight tools.
+- Compute and report effective I/O bandwidth in GB/s.
+
+"""
+
 import asyncio
 from contextlib import nullcontext
 import math
