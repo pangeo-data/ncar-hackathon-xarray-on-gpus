@@ -29,6 +29,7 @@ from era5_dataloader import (
 
 from trainer_utils import setup_logging, set_random_seeds, init_process_group
 
+
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ def main():
 
     # --------------------------
     # Read the ERA5 Zarr dataset
-    data_path = "/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv"
+    data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
         input_vars = ["combined"] * 6  # 6 input variables
         target_vars = [
@@ -191,11 +192,17 @@ def main():
     train_start_year, train_end_year = 2013, 2014
     val_start_year, val_end_year = 2018, 2018
 
-    # -----------------------------------------------------------------------
+   # -----------------------------------------------------------------------
     # Create train and validation datasets
     # -----------------------------------------------------------------------
     # 1) Training dataset
 
+    requested_workers = 4
+    num_workers = min(
+        requested_workers, 
+        os.cpu_count() // 2,  # Safe default
+        torch.cuda.device_count() * 4  # GPU-aware
+    )
     if use_dali:
         # pipe_train = seqzarr_pipeline()
         # train_loader = DALIGenericIterator(
@@ -222,29 +229,29 @@ def main():
         )
 
         # Normalize the dataset using pre-computed mean and std files
-        train_dataset.normalize()
+        mean_file = "/glade/derecho/scratch/negins/hackathon-files/mean_6h_0.25deg.nc"  # pre-computed mean file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        std_file = "/glade/derecho/scratch/negins/hackathon-files/std_6h_0.25deg.nc"  # pre-computed std file for normalization -- copied over from /glade/campaign/cisl/aiml/ksha/CREDIT/
+        train_dataset.normalize(mean_file=mean_file, std_file=std_file)
         train_pytorch = PyTorchERA5Dataset(train_dataset, forecast_step=1)
 
         if distributed:
             train_sampler = DistributedSampler(dataset=train_pytorch, shuffle=False)
-        else: 
-            train_sampler = None
-
-        requested_workers = 16
-        num_workers = min(
-            requested_workers, 
-            os.cpu_count() // 2,  # Safe default
-            torch.cuda.device_count() * 4  # GPU-aware
-        )
-        logger.info(f"Using {num_workers} workers for DataLoader.")
-        train_loader = DataLoader(
-            train_pytorch,
-            batch_size=batch_size,
-            pin_memory=True,
-            num_workers=num_workers,
-            sampler=train_sampler,
-            persistent_workers=True,
-        )
+            train_loader = DataLoader(
+                train_pytorch,
+                batch_size=batch_size,
+                pin_memory=True,
+                num_workers=4,
+                sampler=train_sampler,
+                persistent_workers=True,
+            )  # Use prefetching to speed up data loading
+        else:
+            train_loader = DataLoader(
+                train_pytorch,
+                batch_size=batch_size,
+                pin_memory=True,
+                num_workers=8,
+                persistent_workers=True,
+            )  # Use prefetching to speed up data loading
 
     # --------------------------
     # 2) validation dataset
@@ -267,22 +274,28 @@ def main():
             input_vars=input_vars,
             target_vars=target_vars,
         )
-        val_dataset.normalize())
+        val_dataset.normalize(mean_file=mean_file, std_file=std_file)
         val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
 
         if distributed:
             val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
+            val_loader = DataLoader(
+                val_pytorch,
+                batch_size=batch_size,
+                pin_memory=True,
+                num_workers=4,
+                sampler=val_sampler,
+                persistent_workers=True,
+            )
         else:
-            val_sampler = None
-            
-        val_loader = DataLoader(
-            val_pytorch,
-            batch_size=batch_size,
-            pin_memory=True,
-            num_workers=num_workers,
-            sampler=val_sampler,
-            persistent_workers=True,
-        )
+            # val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True)
+            val_loader = DataLoader(
+                val_pytorch,
+                batch_size=batch_size,
+                pin_memory=True,
+                num_workers=16,
+                persistent_workers=True,
+            )
 
     
     if not use_dali:
@@ -314,7 +327,6 @@ def main():
     if distributed:
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device("cuda:{}".format(LOCAL_RANK))
-        print("device:", device, "world_rank:", WORLD_RANK, "local_rank:", LOCAL_RANK)
         model = model.to(device)
         # Wrap the model with DDP
         ddp_model = torch.nn.parallel.DistributedDataParallel(
@@ -347,20 +359,18 @@ def main():
     throughput_samples = []
     throughput_mb = []
 
-    for epoch in range(num_epochs):
+    logger.info("Starting training loop...")
 
+    for epoch in range(num_epochs):
         epoch_start_time = time.time()
         model.train()
         running_loss = 0.0
-        epoch_train_losses = []  # Track losses for this epoch
+        epoch_train_losses = []
 
         for i, batch in enumerate(train_loader):
-
-            start_time = time.time()  # Start time for the step
+            start_time = time.time()  # Start time for the  train step
 
             if early_stop > 0 and i >= early_stop:
-                if use_dali:
-                    pipe_train.reset()
                 break
 
             if len(batch) == 1:  # DALI
@@ -418,33 +428,32 @@ def main():
         # End of training loop for this epoch
         stop_train_time = time.time()
 
-        if early_stop > 0 and i >= early_stop:
-            if use_dali:
-                val_loader.reset()
-            break
-
         if not argv.notraining:
-            # Calculate average training metrics for this epoch for training cases!
+        # Calculate average training metrics for this epoch for training cases!
             avg_train_metrics = {
-                "loss": sum(entry["total"] for entry in epoch_train_losses)
-                / len(epoch_train_losses),
-                "rmse": sum(entry["rmse"] for entry in epoch_train_losses)
-                / len(epoch_train_losses),
+                'loss': sum(entry['total'] for entry in epoch_train_losses) / len(epoch_train_losses),
+                'rmse': sum(entry['rmse'] for entry in epoch_train_losses) / len(epoch_train_losses)
             }
 
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], "
+            print (f'Epoch [{epoch+1}/{num_epochs}], '
                 f'Average Training Loss: {avg_train_metrics["loss"]:.4f}, '
-                f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C.'
-            )
+                f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C')
 
         # reset the training loader for the next epoch
         if use_dali:
             train_loader.reset()
 
+        
+        if early_stop > 0 and i >= early_stop:
+            logger.info("Skipping validation for benchmarking purposes.")
+            if use_dali:
+                val_loader.reset()
+            break
+
         # -----------------------------------------------------------------
         # Validation Loop
         # -----------------------------------------------------------------
+        logger.info("Starting validation loop...")
         model.eval()
         epoch_val_losses = []
 
@@ -467,9 +476,7 @@ def main():
                     loss, loss_components = custom_loss(outputs, targets)
                     epoch_val_losses.append(loss_components)
                     torch.cuda.synchronize()
-                    step_val_time = (
-                        time.time() - step_val_start_time
-                    )  # Compute elapsed time in milliseconds
+                    step_val_time = time.time() - step_val_start_time
 
                     if WORLD_RANK == 0:
                         print(
@@ -492,23 +499,6 @@ def main():
         torch.cuda.synchronize()
         stop_val_time = time.time()
 
-        if not argv.notraining:
-            # Calculate average validation metrics
-            if distributed:
-                torch.distributed.barrier()
-            avg_val_metrics = {
-                "loss": sum(entry["total"] for entry in epoch_val_losses)
-                / len(epoch_val_losses),
-                "rmse": sum(entry["rmse"] for entry in epoch_val_losses)
-                / len(epoch_val_losses),
-            }
-
-            if WORLD_RANK == 0:
-                print(
-                    f"Epoch [{epoch+1}/{num_epochs}], "
-                    f'Average Validation Loss: {avg_val_metrics["loss"]:.4f}, '
-                    f'Average Validation RMSE: {avg_val_metrics["rmse"]:.2f}°C.'
-                )
 
         if use_dali:
             val_loader.reset()
@@ -517,39 +507,9 @@ def main():
             epoch_time = time.time() - epoch_start_time
             val_time = stop_val_time - start_val_time
             train_time = stop_train_time - epoch_start_time
-            print("-" * 50)
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], Time this epoch: {epoch_time:.2f} seconds"
-            )
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], Training time this epoch: {train_time:.2f} seconds"
-            )
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], Validation time this epoch: {val_time:.2f} seconds"
-            )
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], Time per training step   : {train_time/ len(train_loader):.2f} seconds"
-            )
-            print(
-                f"Epoch [{epoch+1}/{num_epochs}], Time per validation step : {val_time/ len(val_loader):.2f} seconds"
-            )
 
-            if early_stop > 0:
-                steps = early_stop
-            else:
-                steps = len(train_loader.dataset)+ len(val_loader.dataset)
-
-            total_samples = steps * batch_size* WORLD_SIZE
-
-            print ("WORLD_SIZE:", WORLD_SIZE)
-
-            if distributed:
-                total_samples = steps * batch_size * WORLD_SIZE
-
-            print(f"Samples processed this epoch: {total_samples}")
-            print(
-                f"Average throughput this epoch: {total_samples / epoch_time:.2f} samples/sec."
-            )
+            steps = early_stop if early_stop > 0 else len(train_loader.dataset) + len(val_loader.dataset)
+            total_samples = steps * batch_size * WORLD_SIZE
 
             # calculate sample size in MB
             # each sample is snap of input variable and target variables
@@ -559,16 +519,28 @@ def main():
             ) / batch_size
             sample_size_mb = sample_size / 1024 / 1024
 
-            print(f"Sample size: {sample_size_mb:.2f} MB")
-            print(
-                f"Average throughput per MB: {(total_samples * sample_size_mb)/ val_time:.2f} MB/sec."
-            )
+            throughput_sps = total_samples / epoch_time
+            throughput_mbps = (total_samples * sample_size_mb) / val_time
+
+            # Logging output
+            print("\n" + "-" * 60)
+            print(f"Epoch [{epoch+1}/{num_epochs}] Summary")
+            print(f"  Total Epoch Time     : {epoch_time:.2f} sec")
+            print(f"  Training Time        : {train_time:.2f} sec")
+            print(f"  Validation Time      : {val_time:.2f} sec")
+            print(f"  Time/Train Step      : {train_time / len(train_loader):.4f} sec")
+            print(f"  Time/Validation Step : {val_time / len(val_loader):.4f} sec")
+            print(f"  WORLD_SIZE           : {WORLD_SIZE}")
+            print(f"  Total Samples        : {total_samples}")
+            print(f"  Sample Size          : {sample_size_mb:.2f} MB")
+            print(f"  Throughput (samples) : {throughput_sps:.2f} samples/sec")
+            print(f"  Throughput (MB)      : {throughput_mbps:.2f} MB/sec")
 
             epoch_total_times.append(epoch_time)
             epoch_train_times.append(train_time)
             epoch_val_times.append(val_time)
-            throughput_samples.append(total_samples / val_time)
-            throughput_mb.append((total_samples * sample_size_mb) / val_time)
+            throughput_samples.append(throughput_sps)
+            throughput_mb.append(throughput_mbps)
 
     if distributed:
         torch.distributed.barrier()
@@ -576,11 +548,11 @@ def main():
         logger.info("Destroyed process group.")
     
     # End of training loop for all epochs
+    
     logger.info("Training completed.")
-
+    
     if WORLD_RANK == 0:
         print("-" * 50)
-        print("Training completed!")
         total_time = time.time() - training_start_time
         print(f"Total training time: {total_time:.2f} seconds!")
         print(f"Average time per epoch: {np.mean(epoch_total_times):.2f} seconds")
