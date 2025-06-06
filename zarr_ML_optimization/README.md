@@ -12,7 +12,7 @@ To run on 1 GPU, use the following command:
 
 ```bash
 module load conda
-conda activate /glade/work/weiji/conda-envs/gpuhackathon
+conda activate gpuhackathon
 ```
 
 To run on 1 GPU, use the following command:
