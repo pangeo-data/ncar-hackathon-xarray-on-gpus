@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Train a U-Net model using PyTorch and ERA5 surface variables.
+A U-Net benchmark using PyTorch and ERA5 surface variables
 """
-
 import os
 import time
 import argparse
 import logging
-import socket
 
 import xarray as xr
 import numpy as np
@@ -27,60 +25,15 @@ from era5_dataloader import (
     SeqZarrSource,
 )
 
-from trainer_utils import setup_logging, set_random_seeds, init_process_group
+from trainer_utils import setup_logging, set_random_seeds, init_process_group, custom_loss
 
 
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
 
 
-def custom_loss(predictions, targets, lambda_std=0.1):
-    """
-    Another custom loss function combining RMSE with standard deviation matching.
-
-    The function handles two key aspects of the prediction quality:
-    1. Accuracy: Through RMSE calculation
-    2. Variability: Through standard deviation matching
-
-    """
-    # Calculate RMSE for prediction accuracy
-    rmse_loss = torch.nn.functional.mse_loss(
-        predictions, targets, reduction="mean"
-    ).sqrt()
-
-    # Calculate standard deviation component
-    # We'll calculate std over the batch dimension (dim=0) and average over spatial dimensions
-    # unbiased=False removes the Bessel correction and addresses the warning
-    pred_std = torch.std(predictions.view(-1), unbiased=False)
-    target_std = torch.std(targets.view(-1), unbiased=False)
-
-    # Average the standard deviation differences across spatial dimensions
-    std_loss = torch.mean(torch.abs(pred_std - target_std))
-
-    # Combine the losses with the weighting factor
-    total_loss = rmse_loss + lambda_std * std_loss
-
-    # Store components for monitoring
-    loss_components = {
-        "rmse": rmse_loss.item(),
-        "std_diff": std_loss.item(),
-        "total": total_loss.item(),
-    }
-
-    return total_loss, loss_components
-
-
-    # ---------------------
-    # Initialize distributed training
-    if distributed:
-        torch.distributed.init_process_group(
-            backend=backend, rank=WORLD_RANK, world_size=WORLD_SIZE
-        )
-    return LOCAL_RANK, WORLD_SIZE, WORLD_RANK
-
-
 def main():
-    num_epochs_default = 2
+    num_epochs_default = 1
     batch_size_default = 16
     learning_rate_default = 0.001  # Adjusted for Adam optimizer
 
@@ -120,7 +73,7 @@ def main():
         "--synth",
         "--use-synthetic",
         action="store_true",
-        help="Use synthetic data to skip loading ERA5 data.",
+        help="Use synthetic data to skip loading ERA5 data (for benchmarking).",
     )
     parser.add_argument(
         "--use-dali",
@@ -132,6 +85,12 @@ def main():
         type=int,
         help="Stop after N steps per epoch for benchmarking purposes (default: 0, disabled).",
         default=0,
+    )
+    parser.add_argument(
+        "--era5_path",
+        type=str,
+        help="Path to the ERA5 Zarr dataset.",
+        default="/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv",
     )
 
     argv = parser.parse_args()
@@ -154,6 +113,7 @@ def main():
     LOCAL_RANK, WORLD_SIZE, WORLD_RANK = init_process_group(
         distributed=distributed, backend="nccl"
     ) 
+    # --------------------------
 
     setup_logging(world_rank=WORLD_RANK)
     logger.info("Strat training script!")
@@ -163,9 +123,9 @@ def main():
 
     # --------------------------
     # Read the ERA5 Zarr dataset
-    data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
+    data_path = argv.era5_path #"/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"
     if use_dali:
-        input_vars = ["combined"] * 6  # 6 input variables
+        input_vars = ["combined"] * 6  # 6 input variables -- here for proof of concept, we combine all 6 input variables into one "combined" variable
         target_vars = [
             "combined"
         ] * 6  # Stacked input variables into one "combined" variable
@@ -197,18 +157,19 @@ def main():
     # -----------------------------------------------------------------------
     # 1) Training dataset
 
-    requested_workers = 4
+    requested_workers = 8
     num_workers = min(
         requested_workers, 
         os.cpu_count() // 2,  # Safe default
         torch.cuda.device_count() * 4  # GPU-aware
     )
+
     if use_dali:
         # pipe_train = seqzarr_pipeline()
         # train_loader = DALIGenericIterator(
         #    pipelines=pipe_train, output_map=["input", "target"]
         # )
-        source = SeqZarrSource(batch_size=16)
+        source = SeqZarrSource(batch_size=batch_size)
         print("...shape of this source:", source.__len__())
         pipe_train = build_seqzarr_pipeline(source=source)
         pipe_train.build()
@@ -240,7 +201,7 @@ def main():
                 train_pytorch,
                 batch_size=batch_size,
                 pin_memory=True,
-                num_workers=4,
+                num_workers=num_workers,
                 sampler=train_sampler,
                 persistent_workers=True,
             )  # Use prefetching to speed up data loading
@@ -249,7 +210,7 @@ def main():
                 train_pytorch,
                 batch_size=batch_size,
                 pin_memory=True,
-                num_workers=8,
+                num_workers=num_workers,
                 persistent_workers=True,
             )  # Use prefetching to speed up data loading
 
@@ -257,7 +218,7 @@ def main():
     # 2) validation dataset
     # --------------------------
     if use_dali:
-        source = SeqZarrSource(batch_size=16)
+        source = SeqZarrSource(batch_size=batch_size)
         logger.info("...shape of this source:", source.__len__())
         pipe_val = build_seqzarr_pipeline(source=source)
         pipe_val.build()
@@ -283,7 +244,7 @@ def main():
                 val_pytorch,
                 batch_size=batch_size,
                 pin_memory=True,
-                num_workers=4,
+                num_workers=num_workers,
                 sampler=val_sampler,
                 persistent_workers=True,
             )
@@ -293,16 +254,15 @@ def main():
                 val_pytorch,
                 batch_size=batch_size,
                 pin_memory=True,
-                num_workers=16,
+                num_workers=num_workers,
                 persistent_workers=True,
             )
 
     
     if not use_dali:
-        logger.info("Using PyTorch DataLoader")
+        logger.info(f"Using PyTorch DataLoader (workers: {num_workers})")
         logger.info(f"Train samples: {len(train_loader.dataset)}")
         logger.info(f"Validation samples:  {len(val_loader.dataset)}")
-        logger.info("-" * 50)
 
     # --------------------------
     # Define the U-Net model using segmentation_models_pytorch
@@ -351,22 +311,21 @@ def main():
     # Training Loop
 
     training_start_time = time.time()
+    epoch_metrics_history = []
 
-    epoch_total_times = []
-    epoch_train_times = []
-    epoch_val_times = []
-
-    throughput_samples = []
-    throughput_mb = []
-
+    logger.info("-" * 50)
     logger.info("Starting training loop...")
 
     for epoch in range(num_epochs):
-        epoch_start_time = time.time()
-        model.train()
+        epoch_train_steps = 0
+        epoch_val_steps = 0
         running_loss = 0.0
         epoch_train_losses = []
 
+        epoch_start_time = time.time()
+
+        model.train()
+        
         for i, batch in enumerate(train_loader):
             start_time = time.time()  # Start time for the  train step
 
@@ -379,14 +338,11 @@ def main():
             else:  # non-DALI
                 inputs, targets = batch
 
+            inputs, targets = inputs.to(device), targets.to(device)
 
             if not argv.notraining:  # training
 
-                # Move tensors to GPU if available
-                inputs = inputs.to(device)
-                targets = targets.to(device)
                 optimizer.zero_grad()
-
                 # Forward pass
                 outputs = model(inputs)
 
@@ -407,11 +363,13 @@ def main():
                     time.time() - start_time
                 )  # Compute elapsed time in milliseconds
 
+                epoch_train_steps += 1
+
                 if WORLD_RANK == 0:
                     print(
                         f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
                         f"Loss: {loss.item():.4f},"
-                        f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f}",
+                        f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f},",
                         f"Time per training step: {step_train_time:.4f} sec.",
                     )
 
@@ -428,31 +386,14 @@ def main():
         # End of training loop for this epoch
         stop_train_time = time.time()
 
-        if not argv.notraining:
-        # Calculate average training metrics for this epoch for training cases!
-            avg_train_metrics = {
-                'loss': sum(entry['total'] for entry in epoch_train_losses) / len(epoch_train_losses),
-                'rmse': sum(entry['rmse'] for entry in epoch_train_losses) / len(epoch_train_losses)
-            }
-
-            print (f'Epoch [{epoch+1}/{num_epochs}], '
-                f'Average Training Loss: {avg_train_metrics["loss"]:.4f}, '
-                f'Average Training RMSE: {avg_train_metrics["rmse"]:.2f}°C')
-
         # reset the training loader for the next epoch
         if use_dali:
             train_loader.reset()
 
-        
-        if early_stop > 0 and i >= early_stop:
-            logger.info("Skipping validation for benchmarking purposes.")
-            if use_dali:
-                val_loader.reset()
-            break
-
         # -----------------------------------------------------------------
         # Validation Loop
         # -----------------------------------------------------------------
+        logger.info("-" * 50)
         logger.info("Starting validation loop...")
         model.eval()
         epoch_val_losses = []
@@ -462,6 +403,12 @@ def main():
 
             # for i, (inputs, targets) in enumerate(val_loader):
             for i, batch in enumerate(val_loader):
+                if early_stop > 0 and i >= early_stop:
+                    logger.info("Skipping validation for benchmarking purposes.")
+                if use_dali:
+                    val_loader.reset()
+                break
+
                 step_val_start_time = time.time()  # Start time for the step
 
                 if not argv.notraining:
@@ -477,18 +424,18 @@ def main():
                     epoch_val_losses.append(loss_components)
                     torch.cuda.synchronize()
                     step_val_time = time.time() - step_val_start_time
+                    epoch_val_steps += 1
 
                     if WORLD_RANK == 0:
                         print(
                             f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
                             f"Validation Loss: {loss.item():.4f},"
-                            f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f}",
+                            f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f},",
                             f"Time per validation step: {step_val_time:.4f} sec.",
                         )
 
                 else:
                     # Skip validation for benchmarking purposes
-
                     step_val_time = time.time() - step_val_start_time
                     if WORLD_RANK == 0:
                         print(
@@ -508,8 +455,12 @@ def main():
             val_time = stop_val_time - start_val_time
             train_time = stop_train_time - epoch_start_time
 
-            steps = early_stop if early_stop > 0 else len(train_loader.dataset) + len(val_loader.dataset)
-            total_samples = steps * batch_size * WORLD_SIZE
+            # Throughput calculation
+            num_train_batches_processed = epoch_train_steps
+            num_val_batches_processed = epoch_val_steps
+            
+            total_samples_processed_epoch = (num_train_batches_processed + num_val_batches_processed) * batch_size * WORLD_SIZE
+            print (f"Total samples processed in epoch: {total_samples_processed_epoch}")
 
             # calculate sample size in MB
             # each sample is snap of input variable and target variables
@@ -519,8 +470,22 @@ def main():
             ) / batch_size
             sample_size_mb = sample_size / 1024 / 1024
 
-            throughput_sps = total_samples / epoch_time
-            throughput_mbps = (total_samples * sample_size_mb) / val_time
+            throughput_sps = total_samples_processed_epoch / epoch_time
+            throughput_mbps = (total_samples_processed_epoch* sample_size_mb) / epoch_time
+
+            current_epoch_metrics = {
+                "epoch": epoch + 1,
+                "epoch_time": epoch_time,
+                "train_time": train_time,
+                "val_time": val_time,
+                "throughput_sps": throughput_sps,
+                "throughput_mbps": throughput_mbps,
+                "total_samples": total_samples_processed_epoch,
+                "sample_size_mb": sample_size_mb,
+            }
+
+            epoch_metrics_history.append(current_epoch_metrics)
+
 
             # Logging output
             print("\n" + "-" * 60)
@@ -531,21 +496,17 @@ def main():
             print(f"  Time/Train Step      : {train_time / len(train_loader):.4f} sec")
             print(f"  Time/Validation Step : {val_time / len(val_loader):.4f} sec")
             print(f"  WORLD_SIZE           : {WORLD_SIZE}")
-            print(f"  Total Samples        : {total_samples}")
+            print(f"  Total Samples        : {total_samples_processed_epoch}")
             print(f"  Sample Size          : {sample_size_mb:.2f} MB")
             print(f"  Throughput (samples) : {throughput_sps:.2f} samples/sec")
             print(f"  Throughput (MB)      : {throughput_mbps:.2f} MB/sec")
+            print("\n" + "-" * 60)
 
-            epoch_total_times.append(epoch_time)
-            epoch_train_times.append(train_time)
-            epoch_val_times.append(val_time)
-            throughput_samples.append(throughput_sps)
-            throughput_mb.append(throughput_mbps)
 
     if distributed:
         torch.distributed.barrier()
         torch.distributed.destroy_process_group()
-        logger.info("Destroyed process group.")
+        logger.info("Destroyed process group!")
     
     # End of training loop for all epochs
     
@@ -554,18 +515,22 @@ def main():
     if WORLD_RANK == 0:
         print("-" * 50)
         total_time = time.time() - training_start_time
-        print(f"Total training time: {total_time:.2f} seconds!")
-        print(f"Average time per epoch: {np.mean(epoch_total_times):.2f} seconds")
-        print(
-            f"Average training time per epoch: {np.mean(epoch_train_times):.2f} seconds"
-        )
-        print(
-            f"Average validation time per epoch: {np.mean(epoch_val_times):.2f} seconds"
-        )
-        print(
-            f"Average throughput per epoch: {np.mean(throughput_samples):.2f} samples/sec."
-        )
-        print(f"Average throughput per epoch: {np.mean(throughput_mb):.2f} MB/sec.")
+        print(f"Total training time     : {total_time:.2f} seconds!")
+        avg_epoch_wall_time = np.mean([m['epoch_time'] for m in epoch_metrics_history])
+        avg_train_loop_time = np.mean([m['train_time'] for m in epoch_metrics_history])
+        avg_val_loop_time = np.mean([m['val_time'] for m in epoch_metrics_history])
+        avg_tput_sps = np.mean([m['throughput_sps'] for m in epoch_metrics_history])
+        avg_tput_mbps = np.mean([m['throughput_mbps'] for m in epoch_metrics_history])
+        avg_sample_size = np.mean([m['sample_size_mb'] for m in epoch_metrics_history])
+
+        print("-" * 50)
+        print ("Overall Training Summary (Averages Over All Epochs)")
+        print(f"Average epoch wall time (sec)         : {avg_epoch_wall_time:.2f}")
+        print(f"Average train loop time (sec)         : {avg_train_loop_time:.2f}")
+        print(f"Average validation loop time (sec)    : {avg_val_loop_time:.2f}")
+        print(f"Average throughput (samples/sec)      : {avg_tput_sps:.2f}")
+        print(f"Average throughput (MB/sec)           : {avg_tput_mbps:.2f}")
+        print(f"Average sample size (MB)              : {avg_sample_size:.2f}")
         print("-" * 50)
 
 
