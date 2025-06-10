@@ -157,7 +157,7 @@ def main():
     # -----------------------------------------------------------------------
     # 1) Training dataset
 
-    requested_workers = 8
+    requested_workers = 1
     num_workers = min(
         requested_workers, 
         os.cpu_count() // 2,  # Safe default
@@ -204,7 +204,7 @@ def main():
                 num_workers=num_workers,
                 sampler=train_sampler,
                 persistent_workers=True,
-            )  # Use prefetching to speed up data loading
+            )
         else:
             train_loader = DataLoader(
                 train_pytorch,
@@ -212,7 +212,7 @@ def main():
                 pin_memory=True,
                 num_workers=num_workers,
                 persistent_workers=True,
-            )  # Use prefetching to speed up data loading
+            )
 
     # --------------------------
     # 2) validation dataset
@@ -377,6 +377,7 @@ def main():
                 # Time should come out as 0.0
                 torch.cuda.synchronize()
                 step_train_time = time.time() - start_time
+                epoch_train_steps += 1
                 if WORLD_RANK == 0:
                     print(
                         f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], "
@@ -405,9 +406,9 @@ def main():
             for i, batch in enumerate(val_loader):
                 if early_stop > 0 and i >= early_stop:
                     logger.info("Skipping validation for benchmarking purposes.")
-                if use_dali:
-                    val_loader.reset()
-                break
+                    if use_dali:
+                        val_loader.reset()
+                    break
 
                 step_val_start_time = time.time()  # Start time for the step
 
@@ -435,15 +436,16 @@ def main():
                         )
 
                 else:
+                    torch.cuda.synchronize()
                     # Skip validation for benchmarking purposes
                     step_val_time = time.time() - step_val_start_time
+                    epoch_val_steps += 1
                     if WORLD_RANK == 0:
                         print(
                             f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(val_loader)}], "
                             f"Time per validation step: {step_val_time:.4f} sec."
                         )
 
-        torch.cuda.synchronize()
         stop_val_time = time.time()
 
 
@@ -513,9 +515,7 @@ def main():
     logger.info("Training completed.")
     
     if WORLD_RANK == 0:
-        print("-" * 50)
         total_time = time.time() - training_start_time
-        print(f"Total training time     : {total_time:.2f} seconds!")
         avg_epoch_wall_time = np.mean([m['epoch_time'] for m in epoch_metrics_history])
         avg_train_loop_time = np.mean([m['train_time'] for m in epoch_metrics_history])
         avg_val_loop_time = np.mean([m['val_time'] for m in epoch_metrics_history])
@@ -525,6 +525,7 @@ def main():
 
         print("-" * 50)
         print ("Overall Training Summary (Averages Over All Epochs)")
+        print(f"Total training time (sec)             : {total_time:.2f}")
         print(f"Average epoch wall time (sec)         : {avg_epoch_wall_time:.2f}")
         print(f"Average train loop time (sec)         : {avg_train_loop_time:.2f}")
         print(f"Average validation loop time (sec)    : {avg_val_loop_time:.2f}")
