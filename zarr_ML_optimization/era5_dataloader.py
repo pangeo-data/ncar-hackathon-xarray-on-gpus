@@ -63,11 +63,11 @@ class ERA5Dataset:
         """Loads all zarr files into a dictionary keyed by year."""
         zarr_paths = []
         for year in range(self.start_year, self.end_year + 1):
-            zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_rechunked.zarr")
+            zarr_path = os.path.join(self.data_path, f"SixHourly_y_TOTAL_{year}-01-01_{year}-12-31_rechunked_uncompressed.zarr")
             if os.path.exists(zarr_path):
                 zarr_paths.append(zarr_path)
             else:
-                print(f"Data for year {year} not found!!!")
+                print (f"{zarr_path} does not exist for year {year}. Skipping...")
         ds = xr.open_mfdataset(zarr_paths, engine='zarr', consolidated=True, combine='by_coords')[self.input_vars]
         self.length = ds.sizes['time']
         return ds
@@ -291,6 +291,7 @@ class SeqZarrSource:
 
             # Return list to satisfy batch_processing=True
             return [data_x], [data_y]
+
 
     def __len__(self):
         if self.batch:

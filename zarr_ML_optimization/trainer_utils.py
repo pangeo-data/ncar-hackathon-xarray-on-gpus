@@ -26,6 +26,41 @@ def set_random_seeds(random_seed=0):
     torch.backends.cudnn.benchmark = True
     np.random.seed(random_seed)
 
+def custom_loss(predictions, targets, lambda_std=0.1):
+    """
+    Another custom loss function combining RMSE with standard deviation matching.
+
+    The function handles two key aspects of the prediction quality:
+    1. Accuracy: Through RMSE calculation
+    2. Variability: Through standard deviation matching
+
+    """
+    # Calculate RMSE for prediction accuracy
+    rmse_loss = torch.nn.functional.mse_loss(
+        predictions, targets, reduction="mean"
+    ).sqrt()
+
+    # Calculate standard deviation component
+    # We'll calculate std over the batch dimension (dim=0) and average over spatial dimensions
+    # unbiased=False removes the Bessel correction and addresses the warning
+    pred_std = torch.std(predictions.view(-1), unbiased=False)
+    target_std = torch.std(targets.view(-1), unbiased=False)
+
+    # Average the standard deviation differences across spatial dimensions
+    std_loss = torch.mean(torch.abs(pred_std - target_std))
+
+    # Combine the losses with the weighting factor
+    total_loss = rmse_loss + lambda_std * std_loss
+
+    # Store components for monitoring
+    loss_components = {
+        "rmse": rmse_loss.item(),
+        "std_diff": std_loss.item(),
+        "total": total_loss.item(),
+    }
+
+    return total_loss, loss_components
+
 def init_process_group(
     distributed: bool, backend: str = "nccl"
 ) -> tuple[int, int, int]:
