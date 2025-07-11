@@ -2,9 +2,7 @@
 """
 A U-Net benchmark using PyTorch and ERA5 surface variables
 """
-from enum import auto
 import os
-from random import sample
 import time
 import argparse
 import logging
@@ -19,7 +17,6 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import segmentation_models_pytorch as smp
-from nvidia.dali.plugin.pytorch import LastBatchPolicy
 
 from era5_dataloader import (
     ERA5Dataset,
@@ -34,8 +31,6 @@ from trainer_utils import setup_logging, set_random_seeds, init_process_group, c
 # --- Logger Setup ---
 logger = logging.getLogger(__name__)
 
-def batch_bytes(x: torch.Tensor, y: torch.Tensor) -> int:
-    return x.element_size() * x.nelement() + y.element_size() * y.nelement()
 
 def main():
     num_epochs_default = 1
@@ -113,7 +108,6 @@ def main():
     use_synthetic = argv.synth
     use_dali = argv.use_dali
 
-
     # ---------------------------
     # Set random seeds for reproducibility!
     random_seed = 0
@@ -125,16 +119,16 @@ def main():
         distributed=distributed, backend="nccl"
     ) 
     # --------------------------
-
     setup_logging(world_rank=WORLD_RANK)
     logger.info(f"Distributed     : {distributed}")
     logger.info(f"Using DALI      : {use_dali}")
     logger.info(f"Synthetic data  : {use_synthetic}")
-
+    
     # --------------------------
     # Read the ERA5 Zarr dataset
     #data_path = "/glade/campaign/cisl/aiml/wchapman/MLWPS/STAGING/"
-    data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv/"  # Updated path for optimized zarr chunks
+    #data_path = "/glade/derecho/scratch/negins/CREDIT_data/ERA5_mlevel_arXiv"  # Updated path for optimized zarr chunks
+    data_path = argv.era5_path
     if use_dali:
         input_vars = ["combined"] * 6  # 6 input variables -- here for proof of concept, we combine all 6 input variables into one "combined" variable
         target_vars = [
@@ -160,8 +154,8 @@ def main():
             "Q500",
         ]
 
-    train_start_year, train_end_year = 2013, 2014
-    val_start_year, val_end_year = 2018, 2018
+    train_start_year, train_end_year = 2013, 2013
+    val_start_year, val_end_year = 2013, 2013
 
    # -----------------------------------------------------------------------
     # Create train and validation datasets
@@ -181,13 +175,13 @@ def main():
         #    pipelines=pipe_train, output_map=["input", "target"]
         # )
         train_source = SeqZarrSource(batch_size=batch_size )
-        print("...shape of this source:", train_source.__len__())
         num_train_samples=train_source.__len__()
+        logger.info("...shape of this source:", train_source.__len__())
         logger.info(f"DALI Train Source: Total samples reported by SeqZarrSource.__len__(): {num_train_samples}")
         pipe_train = build_seqzarr_pipeline(source=train_source)
         pipe_train.build()
         train_loader = DALIGenericIterator(
-            pipelines=pipe_train, output_map=["input", "target"], last_batch_policy=LastBatchPolicy.DROP,
+            pipelines=pipe_train, output_map=["input", "target"],
         )
         logger.info(f"Train loader effective size (batches): {len(train_loader)}")
         if distributed:
@@ -214,10 +208,8 @@ def main():
             train_loader = DataLoader(
                 train_pytorch,
                 batch_size=batch_size,
-                pin_memory=True,
                 num_workers=num_workers,
                 sampler=train_sampler,
-                persistent_workers=True,
                 drop_last=True,  # Drop last incomplete batch -- easier benchmarking
             )
         else:
@@ -240,7 +232,7 @@ def main():
         pipe_val = build_seqzarr_pipeline(source=source)
         pipe_val.build()
         val_loader = DALIGenericIterator(
-            pipelines=pipe_val, output_map=["input", "target"], last_batch_policy=LastBatchPolicy.DROP, 
+            pipelines=pipe_val, output_map=["input", "target"], 
         )
         if distributed:
             raise NotImplementedError("DALI pipeline with distributed not working yet")
@@ -255,29 +247,15 @@ def main():
         )
         val_dataset.normalize(mean_file=mean_file, std_file=std_file)
         val_pytorch = PyTorchERA5Dataset(val_dataset, forecast_step=1)
-
-        if distributed:
-            val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False)
-            val_loader = DataLoader(
-                val_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=num_workers,
-                sampler=val_sampler,
-                persistent_workers=True,
-                drop_last=True,  # Drop last incomplete batch -- easier benchmarking
-            )
-        else:
-            # val_loader = DataLoader(val_pytorch, batch_size=batch_size, pin_memory=True)
-            val_loader = DataLoader(
-                val_pytorch,
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=num_workers,
-                persistent_workers=True,
-                drop_last=True,  # Drop last incomplete batch -- easier benchmarking
-            )
-
+        
+        val_sampler = DistributedSampler(dataset=val_pytorch, shuffle=False) if distributed else None
+        val_loader = DataLoader(
+            val_pytorch,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            sampler=val_sampler,
+            drop_last=True,  # Drop last incomplete batch -- easier benchmarking
+        )
     
     if not use_dali:
         logger.info(f"Using PyTorch DataLoader (workers: {num_workers})")
@@ -430,55 +408,57 @@ def main():
         epoch_val_losses = []
 
         start_val_time = time.time()
-        with torch.no_grad():
+        sample_val_size_mb = 0
+        if argv.validation:
+            with torch.no_grad():
 
-            # for i, (inputs, targets) in enumerate(val_loader):
-            for i, batch in enumerate(val_loader):
+                # for i, (inputs, targets) in enumerate(val_loader):
+                for i, batch in enumerate(val_loader):
 
-                step_val_start_time = time.time()  # Start time for the step
+                    step_val_start_time = time.time()  # Start time for the step
 
-                if len(batch) == 1:  # DALI
-                    inputs = batch[0]["input"].squeeze(dim=(0, 2))
-                    targets = batch[0]["target"].squeeze(dim=(0, 2))
-                    if i == num_train_samples-2:
-                        logger.info(f"Last batch in epoch {epoch+1} has shape: {inputs.shape}, {targets.shape}")
-                        break
-                else:
-                    inputs, targets = batch
+                    if len(batch) == 1:  # DALI
+                        inputs = batch[0]["input"].squeeze(dim=(0, 2))
+                        targets = batch[0]["target"].squeeze(dim=(0, 2))
+                        if i == num_train_samples-2:
+                            logger.info(f"Last batch in epoch {epoch+1} has shape: {inputs.shape}, {targets.shape}")
+                            break
+                    else:
+                        inputs, targets = batch
 
-                inputs, targets = inputs.to(device), targets.to(device)
-                
-                sample_val_size = (
-                inputs.element_size() * inputs.nelement()
-                + targets.element_size() * targets.nelement()
-                ) / batch_size
-                sample_val_size_mb = sample_val_size / 1024 / 1024  # Convert to MB
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    
+                    sample_val_size = (
+                    inputs.element_size() * inputs.nelement()
+                    + targets.element_size() * targets.nelement()
+                    ) / batch_size
+                    sample_val_size_mb = sample_val_size / 1024 / 1024  # Convert to MB
 
-                if not argv.notraining:
-                    outputs = model(inputs)
-                    loss, loss_components = custom_loss(outputs, targets)
-                    epoch_val_losses.append(loss_components)
-                    torch.cuda.synchronize()
-                    step_val_time = time.time() - step_val_start_time
-                    epoch_val_steps += 1
+                    if not argv.notraining:
+                        outputs = model(inputs)
+                        loss, loss_components = custom_loss(outputs, targets)
+                        epoch_val_losses.append(loss_components)
+                        torch.cuda.synchronize()
+                        step_val_time = time.time() - step_val_start_time
+                        epoch_val_steps += 1
 
-                    if WORLD_RANK == 0:
-                        print(
-                            f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{num_val_steps}], "
-                            f"Validation Loss: {loss.item():.4f},"
-                            f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f},",
-                            f"Time per validation step: {step_val_time:.4f} sec.",
-                        )
+                        if WORLD_RANK == 0:
+                            print(
+                                f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{num_val_steps}], "
+                                f"Validation Loss: {loss.item():.4f},"
+                                f"RMSE: {loss_components['rmse']:.2f}, Std Diff: {loss_components['std_diff']:.2f},",
+                                f"Time per validation step: {step_val_time:.4f} sec.",
+                            )
 
-                else:
-                    # Skip validation for benchmarking purposes
-                    step_val_time = time.time() - step_val_start_time
-                    epoch_val_steps += 1
-                    if WORLD_RANK == 0:
-                        print(
-                            f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{num_val_steps}], "
-                            f"Time per validation step: {step_val_time:.4f} sec."
-                        )
+                    else:
+                        # Skip validation for benchmarking purposes
+                        step_val_time = time.time() - step_val_start_time
+                        epoch_val_steps += 1
+                        if WORLD_RANK == 0:
+                            print(
+                                f"Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{num_val_steps}], "
+                                f"Time per validation step: {step_val_time:.4f} sec."
+                            )
 
         torch.cuda.synchronize()
         stop_val_time = time.time()
@@ -497,8 +477,6 @@ def main():
             num_val_batches_processed = epoch_val_steps
             
             total_samples_processed_epoch = (num_train_batches_processed + num_val_batches_processed) * batch_size * WORLD_SIZE
-            print (f"Total samples processed in epoch: {total_samples_processed_epoch}")
-
 
             throughput_sps = total_samples_processed_epoch / epoch_time
             throughput_mbps = (
@@ -528,8 +506,6 @@ def main():
             print(f"  Total Epoch Time     : {epoch_time:.2f} sec")
             print(f"  Training Time        : {train_time:.2f} sec")
             print(f"  Validation Time      : {val_time:.2f} sec")
-            print(f"  Time/Train Step      : {train_time / len(train_loader):.4f} sec")
-            print(f"  Time/Validation Step : {val_time / len(val_loader):.4f} sec")
             print(f"  WORLD_SIZE           : {WORLD_SIZE}")
             print(f"  Total Samples        : {total_samples_processed_epoch}")
             print(f"  Sample Size          : {sample_train_size_mb:.2f} MB")
@@ -565,8 +541,7 @@ def main():
         print(f"Average validation loop time (sec)    : {avg_val_loop_time:.2f}")
         print(f"Average throughput (samples/sec)      : {avg_tput_sps:.2f}")
         print(f"Average throughput (MB/sec)           : {avg_tput_mbps:.2f}")
-        print(f"Average train sample size (MB)        : {avg_train_sample_size:.2f}")
-        print(f"Average validation sample size (MB)   : {avg_val_sample_size:.2f}")
+        print(f"Average sample size (MB)              : {avg_train_sample_size:.2f}")
         print("-" * 50)
 
 

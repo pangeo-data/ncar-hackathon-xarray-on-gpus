@@ -27,7 +27,6 @@ from zarr.abc.store import Store
 from zarr.codecs import NvcompZstdCodec, ZstdCodec
 from zarr.storage import LocalStore
 
-
 def get_store(path: Path) -> LocalStore:
     async def _get_store(path: Path) -> LocalStore:
         return await LocalStore.open(path)
