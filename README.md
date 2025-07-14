@@ -26,26 +26,14 @@ In this project, we demonstrate how to:
 In this repository, you will find the following:
 
 - `benchmarks/`: Scripts to evaluate read and write performance for Zarr v3 datasets on both CPU and GPU.
+- `zarr_dali_example/`: Contains a minimal example of using DALI to read Zarr data and train a model. 
 - `zarr_ML_optimization`: Contains an example benchmark for training a U-Net model using DALI with Zarr data format.
-- `zarr_dali_example/`: Contains an example of using DALI to read Zarr data and train a model. 
+- `rechunk` : Contains a notebook that demonstrates how to optimize chunking strategies for Zarr datasets.
+
+See [zarr_ML_optimization/README.md](zarr_ML_optimization/README.md) for more details on running the U-Net training example.
 
 
-## Running the Examples
-
-### Benchmarks
-For running the benchmark examples and training the U-Net model, you can use the following commands:
-```bash
-# Run the Zarr read benchmark
-python benchmarks/zstd_benchmark.py
-```
-
-
-
-
-# Getting started
-
-
-
+# Creating the Environment
 
 ## Basic
 
