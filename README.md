@@ -51,8 +51,8 @@ This is for those who want full reproducibility of the virtual environment.
 Create a virtual environment with just Python and conda-lock installed first.
 
 ```
-    mamba create --name gpuhackathon python=3.11 conda-lock=2.5.7
-    mamba activate gpuhackathon
+conda create --name gpuhackathon python=3.11 conda-lock=2.5.7
+conda activate gpuhackathon
 ```
 
 Generate a unified [`conda-lock.yml`](https://github.com/conda/conda-lock) file
