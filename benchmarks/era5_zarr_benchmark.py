@@ -1,3 +1,19 @@
+"""
+This script is a GPU/CPU I/O benchmark for reading a Zarr dataset.
+It compares read performance between CPU-based and GPU-native approaches using Zarr v3.
+
+The script uses:
+- `zarr.config.enable_gpu()` for GPU-backed reads (via CuPy),
+- `GDSStore` from `kvikio_zarr_v3` for GPU Direct Storage (GDS) support,
+- `nvtx` annotations for profiling iterations with NVIDIA Nsight tools.
+
+The dataset is assumed to be a 4D array stored under the key 'combined', typically in (time, channel, height, width) format.
+
+The benchmark:
+- Reads pairs of time steps in a loop,
+- Measures elapsed time,
+- Computes effective I/O bandwidth in GB/s.
+"""
 import asyncio
 from contextlib import nullcontext
 import math
