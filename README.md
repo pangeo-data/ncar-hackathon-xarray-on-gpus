@@ -66,7 +66,7 @@ Installing/Updating a virtual environment from a lockile. Use this to sync your
 dependencies to the exact versions in the `conda-lock.yml` file.
 
 ```
-    conda-lock install --mamba --name gpuhackathon conda-lock.yml
+conda-lock install --mamba --name gpuhackathon conda-lock.yml
 ```
 See also https://conda.github.io/conda-lock/output/#unified-lockfile for more
 usage details.
