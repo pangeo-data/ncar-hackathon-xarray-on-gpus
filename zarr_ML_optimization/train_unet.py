@@ -91,7 +91,7 @@ def main():
         "--era5_path",
         type=str,
         help="Path to the ERA5 Zarr dataset.",
-        default="/glade/campaign/cisl/aiml/wchapman/MLWPS/STAGING/",
+        default="/glade/derecho/scratch/ksha/CREDIT_data/ERA5_mlevel_arXiv",
     )
     parser.add_argument(
         "--num_workers",
