@@ -456,18 +456,3 @@ if __name__ == "__main__":
             #size = -1,
         )
         print (f"Number of batches: {len(train_loader)}")
-        try: 
-            for i, data in enumerate(train_loader):
-                if i<19:
-                    inputs, targets = data[0]["input"].squeeze(0), data[0]["target"].squeeze(0)
-                    print(f"Batch {i+1}: inputs shape = {inputs.shape}, targets shape = {targets.shape}")
-                else:
-                    break
-        finally:
-            train_loader.reset()
-            del pipe
-        print (f"Total samples in dataset: {len(train_loader)}")
-        #pipe.build()
-        #arrays = pipe.run()
-        #print(arrays)
-        #print (len(arrays))
