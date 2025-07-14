@@ -1,14 +1,16 @@
 # Accelerating AI/ML Workflows in Earth Sciences with GPU-Native Xarray and Zarr
 
-🏔️⚡ A collaborative benchmarking and optimization effort from NSF-NCAR, Development Seed, and NVIDIA to accelerate data-intensive geoscience AI/ML workflows using GPU-native technologies like Zarr v3, CuPy, KvikIO, and NVIDIA DALI.
+Read about this project in the [Xarray blog](https://xarray.dev/blog/gpu-pipeline).
+
+🏔️⚡ A collaborative benchmarking and optimization effort from [NSF-NCAR](https://www.ncar.ucar.edu/), [Development Seed](https://developmentseed.org/), and [NVIDIA](https://www.nvidia.com/) to accelerate data-intensive geoscience AI/ML workflows using GPU-native technologies like Zarr v3, CuPy, KvikIO, and NVIDIA DALI.
 
 ## 📌 Overview
 
 This repository contains code, benchmarks, and examples from Xarray on GPUs hackathon project during the
 [NREL/NCAR/NOAA Open Hackathon](https://www.openhackathons.org/s/siteevent/a0CUP00000rwYYZ2A2/se000355)
-in Golden, Colorado from 18-27 February 2025. The goal of this project is to provide a proof-of-concept example of optimizing the performance of geospatial machine learning workflows on GPUs by using [Zarr v3]() and [NVIDIA DALI](). 
+in Golden, Colorado from 18-27 February 2025. The goal of this project is to provide a proof-of-concept example of optimizing the performance of geospatial machine learning workflows on GPUs by using [Zarr-python v3](https://zarr.dev/)  and [NVIDIA DALI](https://developer.nvidia.com/dali). 
 
-📖 [Read the full blog post](www.xarray.dev)
+📖 [Read the full blog post](https://xarray.dev/blog/gpu-pipeline)
 
 In this project, we demonstrate how to:
 
@@ -25,12 +27,25 @@ In this repository, you will find the following:
 
 - `benchmarks/`: Scripts to evaluate read and write performance for Zarr v3 datasets on both CPU and GPU.
 - `zarr_ML_optimization`: Contains an example benchmark for training a U-Net model using DALI with Zarr data format.
-- 
+- `zarr_dali_example/`: Contains an example of using DALI to read Zarr data and train a model. 
 
-- ``: Contains the code for the end-to-end example of training a UNet model using the DALI library with Zarr data format, a bunch of command line arguments are added to the script to make it easier to use for benchmarking.
+
+## Running the Examples
+
+### Benchmarks
+For running the benchmark examples and training the U-Net model, you can use the following commands:
+```bash
+# Run the Zarr read benchmark
+python benchmarks/zstd_benchmark.py
+```
+
+
 
 
 # Getting started
+
+
+
 
 ## Basic
 
@@ -69,9 +84,6 @@ See also https://conda.github.io/conda-lock/output/#unified-lockfile for more
 usage details.
 
 
-### Running the Examples
-
-For running the benchmark examples and 
 
 
 
