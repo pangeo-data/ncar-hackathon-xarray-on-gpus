@@ -1,11 +1,8 @@
 # Zarr ML end-to-end example 
 
 This folder contains an end-to-end example of training a UNet model using the DALI library with Zarr data format.
-
-
-
-
 The code for this example is parallelized using PyTorch DDP (Distributed Data Parallel) and can be run on multiple GPUs or nodes.
+
 
 ## How to run!
 To run on 1 GPU, use the following command:
